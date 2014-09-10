@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"runtime/debug"
+	"strings"
 
 	"github.com/goraft/raft"
 	"github.com/zond/drafty/log"
@@ -29,7 +30,6 @@ func (self *RPC) setBytes(item encodeDecoder, resp *[]byte) (err error) {
 }
 
 func (self *RPC) RequestVote(req []byte, resp *[]byte) (err error) {
-	log.Debugf("VOTE requested: %v", req)
 	request := &raft.RequestVoteRequest{}
 	if _, err = request.Decode(bytes.NewBuffer(req)); err != nil {
 		return
@@ -82,57 +82,67 @@ func (self *RPC) Join(req *raft.DefaultJoinCommand, result *JoinResponse) (err e
 	*result = JoinResponse{
 		Name: self.Raft.Name(),
 	}
-	log.Debugf("%v accepted %v", self.Raft.Name(), req.NodeName())
+	log.Infof("%v accepted %v", self.Raft.Name(), req.NodeName())
 	return
 }
 
-type RPCTransport struct{}
+type RPCTransport struct {
+	Raft raft.Server
+}
 
-func (self *RPCTransport) callEncoded(addr string, service string, req encodeDecoder, resp encodeDecoder) (err error) {
+func (self *RPCTransport) callEncoded(peer *raft.Peer, service string, req encodeDecoder, resp encodeDecoder) (err error) {
 	buf := &bytes.Buffer{}
 	if _, err = req.Encode(buf); err != nil {
-		log.Debugf("Failed calling %v#%v: %v\n%s", addr, service, err, debug.Stack())
+		log.Debugf("Failed calling %v#%v: %v\n%s", peer.ConnectionString, service, err, debug.Stack())
 		return
 	}
 	b := []byte{}
-	if err = switchboard.Switch.Call(addr, service, buf.Bytes(), &b); err != nil {
-		log.Debugf("Failed calling %v#%v: %v\n%s", addr, service, err, debug.Stack())
+	if err = switchboard.Switch.Call(peer.ConnectionString, service, buf.Bytes(), &b); err != nil {
+		log.Debugf("Failed calling %v#%v: %v\n%s", peer.ConnectionString, service, err, debug.Stack())
+		if strings.Contains(err.Error(), "connection refused") {
+			if _, err2 := self.Raft.Do(&raft.DefaultLeaveCommand{
+				Name: peer.Name,
+			}); err2 != nil {
+				log.Warnf("Unable to kick unreachable node %v: %v", peer.Name, err2)
+			}
+			log.Infof("%v kicked %v", self.Raft.Name(), peer.Name)
+		}
 		return
 	}
 	if _, err = resp.Decode(bytes.NewBuffer(b)); err != nil {
-		log.Debugf("Failed calling %v#%v: %v\n%s", addr, service, err, debug.Stack())
+		log.Debugf("Failed calling %v#%v: %v\n%s", peer.ConnectionString, service, err, debug.Stack())
 		return
 	}
 	return
 }
 
-func (self RPCTransport) SendVoteRequest(server raft.Server, peer *raft.Peer, req *raft.RequestVoteRequest) (result *raft.RequestVoteResponse) {
+func (self *RPCTransport) SendVoteRequest(server raft.Server, peer *raft.Peer, req *raft.RequestVoteRequest) (result *raft.RequestVoteResponse) {
 	result = &raft.RequestVoteResponse{}
-	if err := self.callEncoded(peer.ConnectionString, "Raft.RequestVote", req, result); err != nil {
+	if err := self.callEncoded(peer, "Raft.RequestVote", req, result); err != nil {
 		return nil
 	}
 	return result
 }
 
-func (self RPCTransport) SendAppendEntriesRequest(server raft.Server, peer *raft.Peer, req *raft.AppendEntriesRequest) (result *raft.AppendEntriesResponse) {
+func (self *RPCTransport) SendAppendEntriesRequest(server raft.Server, peer *raft.Peer, req *raft.AppendEntriesRequest) (result *raft.AppendEntriesResponse) {
 	result = &raft.AppendEntriesResponse{}
-	if err := self.callEncoded(peer.ConnectionString, "Raft.AppendEntries", req, result); err != nil {
+	if err := self.callEncoded(peer, "Raft.AppendEntries", req, result); err != nil {
 		return nil
 	}
 	return result
 }
 
-func (self RPCTransport) SendSnapshotRequest(server raft.Server, peer *raft.Peer, req *raft.SnapshotRequest) (result *raft.SnapshotResponse) {
+func (self *RPCTransport) SendSnapshotRequest(server raft.Server, peer *raft.Peer, req *raft.SnapshotRequest) (result *raft.SnapshotResponse) {
 	result = &raft.SnapshotResponse{}
-	if err := self.callEncoded(peer.ConnectionString, "Raft.RequestSnapshot", req, result); err != nil {
+	if err := self.callEncoded(peer, "Raft.RequestSnapshot", req, result); err != nil {
 		return nil
 	}
 	return result
 }
 
-func (self RPCTransport) SendSnapshotRecoveryRequest(server raft.Server, peer *raft.Peer, req *raft.SnapshotRecoveryRequest) (result *raft.SnapshotRecoveryResponse) {
+func (self *RPCTransport) SendSnapshotRecoveryRequest(server raft.Server, peer *raft.Peer, req *raft.SnapshotRecoveryRequest) (result *raft.SnapshotRecoveryResponse) {
 	result = &raft.SnapshotRecoveryResponse{}
-	if err := self.callEncoded(peer.ConnectionString, "Raft.SnapshotRecoveryRequest", req, result); err != nil {
+	if err := self.callEncoded(peer, "Raft.SnapshotRecoveryRequest", req, result); err != nil {
 		return nil
 	}
 	return result

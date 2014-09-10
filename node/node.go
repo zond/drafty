@@ -68,9 +68,11 @@ func (self *Node) Start(join string) (err error) {
 	if err = os.MkdirAll(logdir, 0700); err != nil {
 		return
 	}
-	if self.raft, err = raft.NewServer(self.name, logdir, transport.RPCTransport{}, nil, nil, self.server.Addr()); err != nil {
+	rpcTransport := &transport.RPCTransport{}
+	if self.raft, err = raft.NewServer(self.name, logdir, rpcTransport, nil, nil, self.server.Addr()); err != nil {
 		return
 	}
+	rpcTransport.Raft = self.raft
 	self.server.Serve("Raft", &transport.RPC{
 		Raft: self.raft,
 	})
@@ -85,9 +87,9 @@ func (self *Node) Start(join string) (err error) {
 			}); err != nil {
 				return
 			}
-			log.Debugf("%v is cluster leader", self.raft.Name())
+			log.Infof("%v is cluster leader", self.raft.Name())
 		} else {
-			log.Debugf("%v recovered log", self.raft.Name())
+			log.Infof("%v recovered log", self.raft.Name())
 		}
 	} else {
 		if !self.raft.IsLogEmpty() {
@@ -101,7 +103,7 @@ func (self *Node) Start(join string) (err error) {
 		}, resp); err != nil {
 			return
 		}
-		log.Debugf("%v joined %v", self.raft.Name(), resp.Name)
+		log.Infof("%v joined %v", self.raft.Name(), resp.Name)
 		return
 	}
 	return

@@ -36,7 +36,7 @@ func (self *Server) start() (err error) {
 	}
 	self.rpcServer = rpc.NewServer()
 	go self.rpcServer.Accept(listener)
-	log.Debugf("Listening to %#v", self.addr)
+	log.Infof("Listening to %#v", self.addr)
 	return
 }
 
@@ -49,7 +49,6 @@ func (self *Server) Serve(name string, service interface{}) (err error) {
 	if err = self.rpcServer.RegisterName(name, service); err != nil {
 		return
 	}
-	log.Debugf("Registered %v as %#v", service, name)
 	return
 }
 
