@@ -1,4 +1,4 @@
-package node
+package consensual
 
 import (
 	"fmt"
@@ -9,6 +9,7 @@ import (
 
 	"github.com/boltdb/bolt"
 	"github.com/goraft/raft"
+	"github.com/zond/drafty/consensual/commands"
 	"github.com/zond/drafty/log"
 	"github.com/zond/drafty/raft/transport"
 	"github.com/zond/drafty/switchboard"
@@ -19,6 +20,8 @@ var nameKey = []byte("name")
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
+	raft.RegisterCommand(&commands.StopCommand{})
+	raft.RegisterCommand(&commands.ContCommand{})
 }
 
 type Node struct {
@@ -59,6 +62,51 @@ func New(addr string, dir string) (result *Node, err error) {
 	return
 }
 
+type MultiError []error
+
+func (self MultiError) Error() string {
+	return fmt.Sprint([]error(self))
+}
+
+func (self *Node) Save() (b []byte, err error) {
+	log.Debugf("Compacting log")
+	return
+}
+
+func (self *Node) Recovery(b []byte) (err error) {
+	log.Debugf("Recovering from log")
+	return
+}
+
+func (self *Node) Stop() (err error) {
+	log.Infof("STOP, HAMMERTIME!\tWe have %v peers.", len(self.raft.Peers()))
+	return
+}
+
+func (self *Node) Continue() (err error) {
+	log.Infof("CONTINUE!\tWe have %v peers.", len(self.raft.Peers()))
+	return
+}
+
+func (self *Node) WhileStopped(f func() error) (err error) {
+	if _, err = self.raft.Do(&commands.StopCommand{}); err != nil {
+		log.Warnf("Unable to issue stop command before running %v: %v", f, err)
+		return
+	}
+	defer func() {
+		if _, err = self.raft.Do(&commands.ContCommand{}); err != nil {
+			log.Fatalf("Unable to issue continue command after running %v: %v", f, err)
+		}
+		if err = self.raft.TakeSnapshot(); err != nil {
+			return
+		}
+	}()
+	if err = f(); err != nil {
+		return
+	}
+	return
+}
+
 func (self *Node) Start(join string) (err error) {
 	if self.raft != nil {
 		err = fmt.Errorf("Node is already started")
@@ -68,13 +116,16 @@ func (self *Node) Start(join string) (err error) {
 	if err = os.MkdirAll(logdir, 0700); err != nil {
 		return
 	}
-	rpcTransport := &transport.RPCTransport{}
-	if self.raft, err = raft.NewServer(self.name, logdir, rpcTransport, nil, nil, self.server.Addr()); err != nil {
+	rpcTransport := &transport.RPCTransport{
+		Stopper: self,
+	}
+	if self.raft, err = raft.NewServer(self.name, logdir, rpcTransport, self, self, self.server.Addr()); err != nil {
 		return
 	}
 	rpcTransport.Raft = self.raft
 	self.server.Serve("Raft", &transport.RPC{
-		Raft: self.raft,
+		Stopper: self,
+		Raft:    self.raft,
 	})
 	if err = self.raft.Start(); err != nil {
 		return

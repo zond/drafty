@@ -79,6 +79,22 @@ func (self *Switchboard) client(addr string) (client *rpc.Client, err error) {
 	return
 }
 
+func (self *Switchboard) Go(addr, service string, args, reply interface{}, done chan *rpc.Call) (call *rpc.Call) {
+	if client, err := self.client(addr); err != nil {
+		call = &rpc.Call{
+			ServiceMethod: service,
+			Args:          args,
+			Reply:         reply,
+			Error:         err,
+			Done:          make(chan *rpc.Call, 1),
+		}
+		call.Done <- call
+	} else {
+		call = client.Go(service, args, reply, done)
+	}
+	return
+}
+
 func (self *Switchboard) Call(addr, service string, args, reply interface{}) (err error) {
 	client, err := self.client(addr)
 	if err != nil {

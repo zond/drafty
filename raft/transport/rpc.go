@@ -16,8 +16,13 @@ type encodeDecoder interface {
 	Decode(io.Reader) (int, error)
 }
 
+type Stopper interface {
+	WhileStopped(func() error) error
+}
+
 type RPC struct {
-	Raft raft.Server
+	Raft    raft.Server
+	Stopper Stopper
 }
 
 func (self *RPC) setBytes(item encodeDecoder, resp *[]byte) (err error) {
@@ -76,18 +81,25 @@ func (self *RPC) Join(req *raft.DefaultJoinCommand, result *JoinResponse) (err e
 	if self.Raft.Name() != self.Raft.Leader() {
 		return switchboard.Switch.Call(self.Raft.Peers()[self.Raft.Leader()].ConnectionString, "Raft.Join", req, result)
 	}
-	if _, err = self.Raft.Do(req); err != nil {
+	if err = self.Stopper.WhileStopped(func() (err error) {
+		if _, err = self.Raft.Do(req); err != nil {
+			log.Warnf("Unable to add new node %v: %v", req.Name, err)
+			return
+		}
+		return
+	}); err != nil {
 		return
 	}
+	log.Infof("%v accepted %v", self.Raft.Name(), req.NodeName())
 	*result = JoinResponse{
 		Name: self.Raft.Name(),
 	}
-	log.Infof("%v accepted %v", self.Raft.Name(), req.NodeName())
 	return
 }
 
 type RPCTransport struct {
-	Raft raft.Server
+	Raft    raft.Server
+	Stopper Stopper
 }
 
 func (self *RPCTransport) callEncoded(peer *raft.Peer, service string, req encodeDecoder, resp encodeDecoder) (err error) {
@@ -100,10 +112,16 @@ func (self *RPCTransport) callEncoded(peer *raft.Peer, service string, req encod
 	if err = switchboard.Switch.Call(peer.ConnectionString, service, buf.Bytes(), &b); err != nil {
 		log.Debugf("Failed calling %v#%v: %v\n%s", peer.ConnectionString, service, err, debug.Stack())
 		if strings.Contains(err.Error(), "connection refused") {
-			if _, err2 := self.Raft.Do(&raft.DefaultLeaveCommand{
-				Name: peer.Name,
-			}); err2 != nil {
-				log.Warnf("Unable to kick unreachable node %v: %v", peer.Name, err2)
+			if err = self.Stopper.WhileStopped(func() (err error) {
+				if _, err = self.Raft.Do(&raft.DefaultLeaveCommand{
+					Name: peer.Name,
+				}); err != nil {
+					log.Warnf("Unable to kick unreachable node %v: %v", peer.Name, err)
+					return
+				}
+				return
+			}); err != nil {
+				return
 			}
 			log.Infof("%v kicked %v", self.Raft.Name(), peer.Name)
 		}
