@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/boltdb/bolt"
 	"github.com/goraft/raft"
 	"github.com/zond/drafty/consensual/commands"
 	"github.com/zond/drafty/log"
@@ -27,36 +26,17 @@ func init() {
 type Node struct {
 	server *switchboard.Server
 	dir    string
-	db     *bolt.DB
 	raft   raft.Server
 	name   string
 }
 
-func New(addr string, dir string) (result *Node, err error) {
+func New(name string, addr string, dir string) (result *Node, err error) {
 	result = &Node{
 		server: switchboard.NewServer(addr),
+		name:   name,
 		dir:    dir,
 	}
 	if err = os.MkdirAll(result.dir, 0700); err != nil {
-		return
-	}
-	if result.db, err = bolt.Open(filepath.Join(result.dir, "node.db"), 0600, nil); err != nil {
-		return
-	}
-	if err = result.db.Update(func(tx *bolt.Tx) (err error) {
-		metaBucket, err := tx.CreateBucketIfNotExists(metadataBucketKey)
-		if err != nil {
-			return
-		}
-		result.name = string(metaBucket.Get(nameKey))
-		if result.name == "" {
-			result.name = fmt.Sprintf("%07x", rand.Int())[0:7]
-			if err = metaBucket.Put(nameKey, []byte(result.name)); err != nil {
-				return
-			}
-		}
-		return
-	}); err != nil {
 		return
 	}
 	return
@@ -98,7 +78,7 @@ func (self *Node) WhileStopped(f func() error) (err error) {
 			log.Fatalf("Unable to issue continue command after running %v: %v", f, err)
 		}
 		if err = self.raft.TakeSnapshot(); err != nil {
-			return
+			log.Warnf("Unable to issue continue command after running %v: %v", f, err)
 		}
 	}()
 	if err = f(); err != nil {
