@@ -19,6 +19,7 @@ type DB interface {
 	Close() error
 	Put([]byte, []byte) error
 	PutString(string, string) error
+	Get([]byte) ([]byte, error)
 }
 
 type db struct {
@@ -197,6 +198,20 @@ func (self *db) Hash() (result []byte, err error) {
 
 func (self *db) PutString(key string, value string) (err error) {
 	return self.Put([]byte(key), []byte(value))
+}
+
+func (self *db) Get(key []byte) (result []byte, err error) {
+	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
+		valueBucket, err := tx.CreateBucketIfNotExists(valueBucketKey)
+		if err != nil {
+			return
+		}
+		result = valueBucket.Get(key)
+		return
+	}); err != nil {
+		return
+	}
+	return
 }
 
 func (self *db) Put(key []byte, value []byte) (err error) {
