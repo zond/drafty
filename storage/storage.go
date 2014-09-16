@@ -99,7 +99,7 @@ func (self *db) hash(bucket *bolt.Bucket, key []byte, level uint) (result []byte
 	values := bucket.Cursor()
 	start = levelStart(level, key)
 	end := levelEnd(level, key)
-	toTheEnd := len(end) == 0 && end[0] == 0
+	toTheEnd := len(end) == 1 && end[0] == 0
 	hash := murmur3.New128()
 	for k, v := values.Seek(start); k != nil && (toTheEnd || bytes.Compare(k, end) < 0); k, v = values.Next() {
 		if _, err = hash.Write(v); err != nil {
