@@ -51,6 +51,51 @@ func TestLevels(t *testing.T) {
 	}
 }
 
+func TestSync(t *testing.T) {
+	withDB(t, func(db1 DB) {
+		withDB(t, func(db2 DB) {
+			for i := 0; i < 100; i++ {
+				key := make([]byte, binary.MaxVarintLen64)
+				key = key[:binary.PutVarint(key, rand.Int63()%300)]
+				value := make([]byte, binary.MaxVarintLen64)
+				value = value[:binary.PutVarint(value, rand.Int63()%300)]
+				if err := db1.Put(key, value); err != nil {
+					return
+				}
+			}
+			for i := 0; i < 100; i++ {
+				key := make([]byte, binary.MaxVarintLen64)
+				key = key[:binary.PutVarint(key, rand.Int63()%300)]
+				value := make([]byte, binary.MaxVarintLen64)
+				value = value[:binary.PutVarint(value, rand.Int63()%300)]
+				if err := db2.Put(key, value); err != nil {
+					return
+				}
+			}
+			for i := 0; i < 100; i++ {
+				key := make([]byte, binary.MaxVarintLen64)
+				key = key[:binary.PutVarint(key, rand.Int63()%300)]
+				if err := db1.Delete(key); err != nil {
+					return
+				}
+			}
+			for i := 0; i < 100; i++ {
+				key := make([]byte, binary.MaxVarintLen64)
+				key = key[:binary.PutVarint(key, rand.Int63()%300)]
+				if err := db2.Delete(key); err != nil {
+					return
+				}
+			}
+			db1.Sync(db2, Range{}, func(a, b []byte) bool { return true })
+			if eq, err := db2.Equal(db2); err != nil {
+				t.Fatalf("%v", err)
+			} else if !eq {
+				t.Errorf("Not equal")
+			}
+		})
+	})
+}
+
 func TestTopHash(t *testing.T) {
 	keys := [][]byte{}
 	values := [][]byte{}

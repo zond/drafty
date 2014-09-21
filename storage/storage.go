@@ -6,22 +6,33 @@ import (
 	"fmt"
 
 	"github.com/boltdb/bolt"
+	"github.com/kr/pretty"
 	"github.com/spaolacci/murmur3"
 )
 
 var valueBucketKey = []byte("values")
 var merkleBucketKey = []byte("merkles")
 
-type DB interface {
+// OverwriteFunc returns whether localValue should overwrite remoteValue
+type OverwriteFunc func(localValue, remoteValue []byte) bool
+
+type Synchronizable interface {
 	Hash() ([]byte, error)
-	Equal(DB) (bool, error)
-	Close() error
 	Put([]byte, []byte) error
-	PutString(string, string) error
 	Get([]byte) ([]byte, error)
+	Hashes([]byte, uint) ([256][]byte, error)
+}
+
+type DB interface {
+	Synchronizable
+	Equal(Synchronizable) (bool, error)
+	Close() error
+	PutString(string, string) error
 	GetString(string) (string, error)
 	Delete([]byte) error
 	DeleteString(string) error
+	Sync(Synchronizable, Range, OverwriteFunc) (bool, error)
+	PP() string
 }
 
 type db struct {
@@ -95,13 +106,19 @@ func levelEnd(level uint, key []byte) (result []byte) {
 	return
 }
 
-func (self *db) hash(bucket *bolt.Bucket, key []byte, level uint) (result []byte, start []byte, sources int, err error) {
-	values := bucket.Cursor()
+func (self *db) hash(valueBucket, hashBucket *bolt.Bucket, key []byte, level uint) (result []byte, start []byte, sources int, err error) {
+	hash := murmur3.New128()
+	if val := valueBucket.Get(key); val != nil {
+		if _, err = hash.Write(val); err != nil {
+			return
+		}
+		sources++
+	}
 	start = levelStart(level, key)
 	end := levelEnd(level, key)
 	toTheEnd := len(end) == 1 && end[0] == 0
-	hash := murmur3.New128()
-	for k, v := values.Seek(start); k != nil && (toTheEnd || bytes.Compare(k, end) < 0); k, v = values.Next() {
+	sourceHashes := hashBucket.Cursor()
+	for k, v := sourceHashes.Seek(start); k != nil && (toTheEnd || bytes.Compare(k, end) < 0); k, v = sourceHashes.Next() {
 		if _, err = hash.Write(v); err != nil {
 			return
 		}
@@ -127,40 +144,28 @@ func (self *db) putUint(bucket *bolt.Bucket, key []byte, i uint) (err error) {
 	return bucket.Put(key, b)
 }
 
-func (self *db) updateMerkle(valueBucket *bolt.Bucket, merkleBucket *bolt.Bucket, key []byte) (err error) {
-	level := uint(len(key))
-	merkles, err := merkleBucket.CreateBucketIfNotExists(merkleLevelKey(level))
-	if err != nil {
-		return
-	}
-	hash, levelStart, sources, err := self.hash(valueBucket, key, level)
-	if err != nil {
-		return
-	}
-	if sources > 0 {
-		if err = merkles.Put(levelStart, hash); err != nil {
+func (self *db) updateHashes(valueBucket, merkleBucket *bolt.Bucket, key []byte) (err error) {
+	var srcHashBucket *bolt.Bucket
+	var dstHashBucket *bolt.Bucket
+	var hash []byte
+	var levelStart []byte
+	var sources int
+	for level := len(key); level >= 0; level-- {
+		if srcHashBucket, err = merkleBucket.CreateBucketIfNotExists(merkleLevelKey(uint(level + 1))); err != nil {
 			return
 		}
-	} else {
-		if err = merkles.Delete(levelStart); err != nil {
+		if hash, levelStart, sources, err = self.hash(valueBucket, srcHashBucket, key[:level], uint(level)); err != nil {
 			return
 		}
-	}
-	for level > 0 {
-		valueBucket = merkles
-		level--
-		if merkles, err = merkleBucket.CreateBucketIfNotExists(merkleLevelKey(level)); err != nil {
-			return
-		}
-		if hash, levelStart, sources, err = self.hash(valueBucket, key, level); err != nil {
+		if dstHashBucket, err = merkleBucket.CreateBucketIfNotExists(merkleLevelKey(uint(level))); err != nil {
 			return
 		}
 		if sources > 0 {
-			if err = merkles.Put(levelStart, hash); err != nil {
+			if err = dstHashBucket.Put(levelStart, hash); err != nil {
 				return
 			}
 		} else {
-			if err = merkles.Delete(levelStart); err != nil {
+			if err = dstHashBucket.Delete(levelStart); err != nil {
 				return
 			}
 		}
@@ -168,7 +173,76 @@ func (self *db) updateMerkle(valueBucket *bolt.Bucket, merkleBucket *bolt.Bucket
 	return
 }
 
-func (self *db) Equal(o DB) (result bool, err error) {
+type Range struct {
+	FromInc []byte
+	ToExc   []byte
+}
+
+func (self Range) Empty() bool {
+	return self.FromInc == nil && self.ToExc == nil
+}
+
+func (self *db) syncFrom(o Synchronizable, level uint, prefix []byte, r Range, overwriteFunc OverwriteFunc) (done bool, err error) {
+	hashes, err := self.Hashes(prefix, level)
+	if err != nil {
+		return
+	}
+	oHashes, err := o.Hashes(prefix, level)
+	if err != nil {
+		return
+	}
+	start := int(r.FromInc[0])
+	end := int(r.ToExc[0])
+	if len(r.ToExc) == 1 && r.ToExc[0] == 0 {
+		end = 256
+	}
+	for i := start; i < end; i++ {
+		if bytes.Compare(hashes[i], oHashes[i]) != 0 {
+			newPrefix := make([]byte, len(prefix)+1)
+			copy(newPrefix, prefix)
+			newPrefix[len(prefix)] = byte(i)
+			if len(newPrefix) > 0 {
+				var value []byte
+				if value, err = self.Get(newPrefix); err != nil {
+					return
+				}
+				var oValue []byte
+				if oValue, err = o.Get(newPrefix); err != nil {
+					return
+				}
+				if bytes.Compare(value, oValue) != 0 {
+					if overwriteFunc(value, oValue) {
+						o.Put(newPrefix, value)
+					} else {
+						self.Put(newPrefix, oValue)
+					}
+				}
+			}
+			self.syncFrom(o, level+1, newPrefix, r, overwriteFunc)
+		}
+	}
+	return
+}
+
+func (self *db) Sync(o Synchronizable, r Range, overwriteFunc OverwriteFunc) (done bool, err error) {
+	eq, err := self.Equal(o)
+	if err != nil {
+		return
+	}
+	if eq {
+		done = true
+		return
+	}
+	if r.FromInc == nil {
+		r.FromInc = []byte{0}
+	}
+	if r.ToExc == nil {
+		r.ToExc = []byte{0}
+	}
+	return self.syncFrom(o, 1, nil, r, overwriteFunc)
+}
+
+func (self *db) Equal(o Synchronizable) (result bool, err error) {
 	h1, err := self.Hash()
 	if err != nil {
 		return
@@ -181,13 +255,65 @@ func (self *db) Equal(o DB) (result bool, err error) {
 	return
 }
 
-func (self *db) Hash() (result []byte, err error) {
-	if err = self.bolt.Update(func(tx *bolt.Tx) (err error) {
-		merkleBucket, err := tx.CreateBucketIfNotExists(merkleBucketKey)
-		if err != nil {
+func (self *db) PP() string {
+	m, err := self.ToMap()
+	if err != nil {
+		return err.Error()
+	}
+	return pretty.Sprintf("%# v", m)
+}
+
+func (self *db) ToMap() (result map[string]string, err error) {
+	result = map[string]string{}
+	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
+		valueBucket := tx.Bucket(valueBucketKey)
+		if valueBucket == nil {
 			return
 		}
-		_, result = merkleBucket.Bucket(merkleLevelKey(0)).Cursor().First()
+		cursor := valueBucket.Cursor()
+		for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
+			result[string(k)] = string(v)
+		}
+		return
+	}); err != nil {
+		return
+	}
+	return
+}
+
+func (self *db) Hashes(key []byte, level uint) (result [256][]byte, err error) {
+	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
+		merkleBucket := tx.Bucket(merkleBucketKey)
+		if merkleBucket == nil {
+			return
+		}
+		merkles := merkleBucket.Bucket(merkleLevelKey(level))
+		if merkles == nil {
+			return
+		}
+		cursor := merkles.Cursor()
+		newKey := make([]byte, len(key)+1)
+		copy(newKey, key)
+		start := levelStart(level-1, newKey)
+		end := levelEnd(level-1, newKey)
+		toTheEnd := len(end) == 1 && end[0] == 0
+		for k, v := cursor.Seek(start); k != nil && (toTheEnd || bytes.Compare(k, end) < 0); k, v = cursor.Next() {
+			result[k[int(level-1)]] = v
+		}
+		return
+	}); err != nil {
+		return
+	}
+	return
+}
+
+func (self *db) Hash() (result []byte, err error) {
+	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
+		merkleBucket := tx.Bucket(merkleBucketKey)
+		if merkleBucket == nil {
+			return
+		}
+		result = merkleBucket.Bucket(merkleLevelKey(0)).Get([]byte{0})
 		return
 	}); err != nil {
 		return
@@ -210,8 +336,8 @@ func (self *db) GetString(key string) (result string, err error) {
 
 func (self *db) Get(key []byte) (result []byte, err error) {
 	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
-		valueBucket, err := tx.CreateBucketIfNotExists(valueBucketKey)
-		if err != nil {
+		valueBucket := tx.Bucket(valueBucketKey)
+		if valueBucket == nil {
 			return
 		}
 		result = valueBucket.Get(key)
@@ -239,7 +365,7 @@ func (self *db) Delete(key []byte) (err error) {
 		if err != nil {
 			return
 		}
-		if err = self.updateMerkle(valueBucket, merkleBucket, key); err != nil {
+		if err = self.updateHashes(valueBucket, merkleBucket, key); err != nil {
 			return
 		}
 		return
@@ -261,7 +387,7 @@ func (self *db) Put(key []byte, value []byte) (err error) {
 		if err != nil {
 			return
 		}
-		if err = self.updateMerkle(valueBucket, merkleBucket, key); err != nil {
+		if err = self.updateHashes(valueBucket, merkleBucket, key); err != nil {
 			return
 		}
 		return
