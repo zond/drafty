@@ -14,7 +14,7 @@ func init() {
 	rand.Seed(time.Now().Unix())
 }
 
-func withDB(t *testing.T, f func(DB)) {
+func withDB(t testing.TB, f func(DB)) {
 	fname := fmt.Sprintf("test-%v.db", rand.Int())
 	db, err := New(fname)
 	if err != nil {
@@ -93,6 +93,25 @@ func TestSync(t *testing.T) {
 				t.Errorf("Not equal")
 			}
 		})
+	})
+}
+
+func BenchmarkPut(b *testing.B) {
+	withDB(b, func(db DB) {
+		b.StopTimer()
+		var keys [][]byte
+		var values [][]byte
+		for i := 0; i < b.N; i++ {
+			key := make([]byte, binary.MaxVarintLen64)
+			keys = append(keys, key[:binary.PutVarint(key, rand.Int63())])
+			value := make([]byte, binary.MaxVarintLen64)
+			values = append(values, value[:binary.PutVarint(value, rand.Int63())])
+		}
+		b.StartTimer()
+		for i := 0; i < b.N; i++ {
+			db.Put(keys[i], values[i])
+		}
+		b.StopTimer()
 	})
 }
 
