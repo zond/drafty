@@ -5,6 +5,8 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/goraft/raft"
@@ -24,17 +26,21 @@ func init() {
 }
 
 type Node struct {
-	server *switchboard.Server
-	dir    string
-	raft   raft.Server
-	name   string
+	server    *switchboard.Server
+	dir       string
+	raft      raft.Server
+	name      string
+	stopped   int32
+	waitGroup *sync.WaitGroup
 }
 
 func New(name string, addr string, dir string) (result *Node, err error) {
 	result = &Node{
-		server: switchboard.NewServer(addr),
-		name:   name,
-		dir:    dir,
+		server:    switchboard.NewServer(addr),
+		name:      name,
+		dir:       dir,
+		stopped:   0,
+		waitGroup: &sync.WaitGroup{},
 	}
 	if err = os.MkdirAll(result.dir, 0700); err != nil {
 		return
@@ -59,12 +65,13 @@ func (self *Node) Recovery(b []byte) (err error) {
 }
 
 func (self *Node) Stop() (err error) {
-	log.Infof("STOP, HAMMERTIME!\tWe have %v peers.", len(self.raft.Peers()))
+	atomic.StoreInt32(&self.stopped, 1)
+	self.waitGroup.Wait()
 	return
 }
 
 func (self *Node) Continue() (err error) {
-	log.Infof("CONTINUE!\tWe have %v peers.", len(self.raft.Peers()))
+	atomic.StoreInt32(&self.stopped, 0)
 	return
 }
 
