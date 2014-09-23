@@ -2,12 +2,14 @@ package storage
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"math/rand"
 	"os"
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/boltdb/bolt"
 )
 
 func init() {
@@ -51,46 +53,143 @@ func TestLevels(t *testing.T) {
 	}
 }
 
+func TestPartialSync(t *testing.T) {
+	for i := 0; i < 1; i++ {
+		withDB(t, func(db1 DB) {
+			withDB(t, func(db2 DB) {
+				for i := 0; i < 10; i++ {
+					if err := db1.Put(randomBytes(2), randomBytes(2)); err != nil {
+						return
+					}
+				}
+				for i := 0; i < 10; i++ {
+					if err := db1.Delete(randomBytes(2)); err != nil {
+						return
+					}
+				}
+				m1, err := db1.ToSortedMap()
+				if err != nil {
+					t.Fatalf("%v", err)
+				}
+				m2, err := db2.ToSortedMap()
+				if err != nil {
+					t.Fatalf("%v", err)
+				}
+				fmt.Printf("Before\n%+v\n%+v\n", m1, m2)
+				from := randomBytes(2)
+				var to []byte
+				for to == nil || bytes.Compare(to, from) < 0 {
+					to = randomBytes(2)
+				}
+				r := Range{
+					FromInc: from,
+					ToExc:   to,
+				}
+				if err := db1.Sync(db2, r, copyForwardFunc); err != nil {
+					t.Fatalf("%v", err)
+				}
+				if err := db1.View(func(b1 *bolt.Bucket) (err error) {
+					return db2.View(func(b2 *bolt.Bucket) (err error) {
+						c1 := b1.Cursor()
+						for k1, v1 := c1.First(); k1 != nil; k1, v1 = c1.Next() {
+							if r.Within(k1) {
+								if bytes.Compare(v1, b2.Get(k1)) != 0 {
+									t.Errorf("Wanted %#v => %#v to be synced, but got %#v", string(k1), string(v1), string(b2.Get(k1)))
+								}
+							} else {
+								if v2 := b2.Get(k1); v2 != nil {
+									t.Errorf("Wanted %#v => %#v to NOT be synced, but got %#v", string(k1), string(v1), string(b2.Get(k1)))
+								}
+							}
+						}
+						return
+					})
+				}); err != nil {
+					t.Fatalf("%v", err)
+				}
+			})
+		})
+	}
+}
+
+func TestRange(t *testing.T) {
+	r := Range{
+		FromInc: []byte{1, 2, 3},
+		ToExc:   []byte{2, 3, 4},
+	}
+	if r.Within([]byte{1, 2, 2}) {
+		t.Errorf("noo")
+	}
+	if r.Within([]byte{1, 2, 2, 9, 9, 9}) {
+		t.Errorf("noo")
+	}
+	if r.Within([]byte{2, 3, 4}) {
+		t.Errorf("noo")
+	}
+	if r.Within([]byte{2, 3, 4, 0}) {
+		t.Errorf("noo")
+	}
+	if !r.Within([]byte{1, 2, 3}) {
+		t.Errorf("noo")
+	}
+	if !r.Within([]byte{1, 2, 3, 4}) {
+		t.Errorf("noo")
+	}
+	if !r.Within([]byte{2, 3, 3, 9, 9}) {
+		t.Errorf("noo")
+	}
+}
+
+func randomBytes(l int) (result []byte) {
+	result = make([]byte, 1+rand.Int()%(l-1))
+	for index, _ := range result {
+		result[index] = byte(rand.Int())
+	}
+	return
+}
+
+func copyForwardFunc(a, b []byte) bool {
+	if a == nil {
+		return false
+	}
+	return true
+}
+
 func TestSync(t *testing.T) {
 	withDB(t, func(db1 DB) {
 		withDB(t, func(db2 DB) {
-			for i := 0; i < 100; i++ {
-				key := make([]byte, binary.MaxVarintLen64)
-				key = key[:binary.PutVarint(key, rand.Int63()%300)]
-				value := make([]byte, binary.MaxVarintLen64)
-				value = value[:binary.PutVarint(value, rand.Int63()%300)]
-				if err := db1.Put(key, value); err != nil {
+			for i := 0; i < 1000; i++ {
+				if err := db1.Put(randomBytes(4), randomBytes(4)); err != nil {
+					return
+				}
+				if err := db1.Delete(randomBytes(2)); err != nil {
+					return
+				}
+				if err := db2.Put(randomBytes(4), randomBytes(4)); err != nil {
+					return
+				}
+				if err := db2.Delete(randomBytes(2)); err != nil {
 					return
 				}
 			}
-			for i := 0; i < 100; i++ {
-				key := make([]byte, binary.MaxVarintLen64)
-				key = key[:binary.PutVarint(key, rand.Int63()%300)]
-				value := make([]byte, binary.MaxVarintLen64)
-				value = value[:binary.PutVarint(value, rand.Int63()%300)]
-				if err := db2.Put(key, value); err != nil {
-					return
-				}
+			if err := db1.Sync(db2, Range{}, copyForwardFunc); err != nil {
+				t.Fatalf("%v", err)
 			}
-			for i := 0; i < 100; i++ {
-				key := make([]byte, binary.MaxVarintLen64)
-				key = key[:binary.PutVarint(key, rand.Int63()%300)]
-				if err := db1.Delete(key); err != nil {
-					return
-				}
-			}
-			for i := 0; i < 100; i++ {
-				key := make([]byte, binary.MaxVarintLen64)
-				key = key[:binary.PutVarint(key, rand.Int63()%300)]
-				if err := db2.Delete(key); err != nil {
-					return
-				}
-			}
-			db1.Sync(db2, Range{}, func(a, b []byte) bool { return true })
 			if eq, err := db2.Equal(db2); err != nil {
 				t.Fatalf("%v", err)
 			} else if !eq {
 				t.Errorf("Not equal")
+			}
+			m1, err := db1.ToSortedMap()
+			if err != nil {
+				t.Fatalf("%v", err)
+			}
+			m2, err := db2.ToSortedMap()
+			if err != nil {
+				t.Fatalf("%v", err)
+			}
+			if !reflect.DeepEqual(m1, m2) {
+				t.Errorf("\n%v\n!=\n%v", m1, m2)
 			}
 		})
 	})
@@ -102,10 +201,8 @@ func BenchmarkPut(b *testing.B) {
 		var keys [][]byte
 		var values [][]byte
 		for i := 0; i < b.N; i++ {
-			key := make([]byte, binary.MaxVarintLen64)
-			keys = append(keys, key[:binary.PutVarint(key, rand.Int63())])
-			value := make([]byte, binary.MaxVarintLen64)
-			values = append(values, value[:binary.PutVarint(value, rand.Int63())])
+			keys = append(keys, randomBytes(10))
+			values = append(values, randomBytes(10))
 		}
 		b.StartTimer()
 		for i := 0; i < b.N; i++ {
@@ -120,14 +217,12 @@ func TestTopHash(t *testing.T) {
 	values := [][]byte{}
 	toDelete := [][]byte{}
 	for i := 0; i < 100; i++ {
-		key := make([]byte, binary.MaxVarintLen64)
-		key = key[:binary.PutVarint(key, rand.Int63())]
+		key := randomBytes(10)
 		keys = append(keys, key)
 		if rand.Int()%2 == 0 {
 			toDelete = append(toDelete, key)
 		}
-		value := make([]byte, binary.MaxVarintLen64)
-		values = append(values, value[:binary.PutVarint(value, rand.Int63())])
+		values = append(values, randomBytes(10))
 	}
 	withDB(t, func(db1 DB) {
 		withDB(t, func(db2 DB) {

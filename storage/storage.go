@@ -31,8 +31,10 @@ type DB interface {
 	GetString(string) (string, error)
 	Delete([]byte) error
 	DeleteString(string) error
-	Sync(Synchronizable, Range, OverwriteFunc) (bool, error)
+	Sync(Synchronizable, Range, OverwriteFunc) error
+	View(func(*bolt.Bucket) error) error
 	PP() string
+	ToSortedMap() ([][2][]byte, error)
 }
 
 type db struct {
@@ -44,7 +46,32 @@ func New(file string) (result DB, err error) {
 	if d.bolt, err = bolt.Open(file, 0600, nil); err != nil {
 		return
 	}
+	if err = d.bolt.Update(func(t *bolt.Tx) (err error) {
+		if _, err = t.CreateBucketIfNotExists(valueBucketKey); err != nil {
+			return
+		}
+		if _, err = t.CreateBucketIfNotExists(merkleBucketKey); err != nil {
+			return
+		}
+		return
+	}); err != nil {
+		return
+	}
 	result = d
+	return
+}
+
+func (self *db) View(f func(*bolt.Bucket) error) (err error) {
+	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
+		bucket := tx.Bucket(valueBucketKey)
+		if bucket == nil {
+			err = fmt.Errorf("No values in database")
+			return
+		}
+		return f(bucket)
+	}); err != nil {
+		return
+	}
 	return
 }
 
@@ -83,16 +110,16 @@ func levelStart(level uint, key []byte) (result []byte) {
 	if level > uint(len(key)) {
 		level = uint(len(key))
 	}
-	return key[:level]
+	result = make([]byte, level)
+	copy(result, key)
+	return
 }
 
 func levelEnd(level uint, key []byte) (result []byte) {
 	if level == 0 {
 		return []byte{0}
 	}
-	start := levelStart(level, key)
-	result = make([]byte, len(start))
-	copy(result, start)
+	result = levelStart(level, key)
 	pos := len(result) - 1
 	result[pos] = result[pos] + 1
 	for result[pos] == 0 {
@@ -178,11 +205,15 @@ type Range struct {
 	ToExc   []byte
 }
 
+func (self Range) Within(k []byte) bool {
+	return (self.FromInc == nil || bytes.Compare(self.FromInc, k) < 1) && (self.ToExc == nil || bytes.Compare(self.ToExc, k) > 0)
+}
+
 func (self Range) Empty() bool {
 	return self.FromInc == nil && self.ToExc == nil
 }
 
-func (self *db) syncFrom(o Synchronizable, level uint, prefix []byte, r Range, overwriteFunc OverwriteFunc) (done bool, err error) {
+func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, overwriteFunc OverwriteFunc) (err error) {
 	hashes, err := self.Hashes(prefix, level)
 	if err != nil {
 		return
@@ -191,17 +222,20 @@ func (self *db) syncFrom(o Synchronizable, level uint, prefix []byte, r Range, o
 	if err != nil {
 		return
 	}
-	start := int(r.FromInc[0])
-	end := int(r.ToExc[0])
-	if len(r.ToExc) == 1 && r.ToExc[0] == 0 {
-		end = 256
+	start := 0
+	end := 255
+	if uint(len(r.FromInc)) >= level {
+		start = int(r.FromInc[level-1])
 	}
-	for i := start; i < end; i++ {
+	if uint(len(r.ToExc)) >= level {
+		end = int(r.ToExc[level-1])
+	}
+	for i := start; i <= end; i++ {
 		if bytes.Compare(hashes[i], oHashes[i]) != 0 {
 			newPrefix := make([]byte, len(prefix)+1)
 			copy(newPrefix, prefix)
 			newPrefix[len(prefix)] = byte(i)
-			if len(newPrefix) > 0 {
+			if r.Within(newPrefix) {
 				var value []byte
 				if value, err = self.Get(newPrefix); err != nil {
 					return
@@ -212,34 +246,31 @@ func (self *db) syncFrom(o Synchronizable, level uint, prefix []byte, r Range, o
 				}
 				if bytes.Compare(value, oValue) != 0 {
 					if overwriteFunc(value, oValue) {
-						o.Put(newPrefix, value)
+						if err = o.Put(newPrefix, value); err != nil {
+							return
+						}
 					} else {
-						self.Put(newPrefix, oValue)
+						if err = self.Put(newPrefix, oValue); err != nil {
+							return
+						}
 					}
 				}
 			}
-			self.syncFrom(o, level+1, newPrefix, r, overwriteFunc)
+			self.sync(o, level+1, newPrefix, r, overwriteFunc)
 		}
 	}
 	return
 }
 
-func (self *db) Sync(o Synchronizable, r Range, overwriteFunc OverwriteFunc) (done bool, err error) {
+func (self *db) Sync(o Synchronizable, r Range, overwriteFunc OverwriteFunc) (err error) {
 	eq, err := self.Equal(o)
 	if err != nil {
 		return
 	}
 	if eq {
-		done = true
 		return
 	}
-	if r.FromInc == nil {
-		r.FromInc = []byte{0}
-	}
-	if r.ToExc == nil {
-		r.ToExc = []byte{0}
-	}
-	return self.syncFrom(o, 1, nil, r, overwriteFunc)
+	return self.sync(o, 1, nil, r, overwriteFunc)
 }
 
 func (self *db) Equal(o Synchronizable) (result bool, err error) {
@@ -256,23 +287,26 @@ func (self *db) Equal(o Synchronizable) (result bool, err error) {
 }
 
 func (self *db) PP() string {
-	m, err := self.ToMap()
+	m, err := self.ToSortedMap()
 	if err != nil {
 		return err.Error()
 	}
 	return pretty.Sprintf("%# v", m)
 }
 
-func (self *db) ToMap() (result map[string]string, err error) {
-	result = map[string]string{}
+func (self *db) ToSortedMap() (result [][2][]byte, err error) {
 	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
 		valueBucket := tx.Bucket(valueBucketKey)
 		if valueBucket == nil {
+			err = fmt.Errorf("Database has no value bucket?")
 			return
 		}
 		cursor := valueBucket.Cursor()
 		for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
-			result[string(k)] = string(v)
+			result = append(result, [2][]byte{
+				k,
+				v,
+			})
 		}
 		return
 	}); err != nil {
@@ -285,6 +319,7 @@ func (self *db) Hashes(key []byte, level uint) (result [256][]byte, err error) {
 	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
 		merkleBucket := tx.Bucket(merkleBucketKey)
 		if merkleBucket == nil {
+			err = fmt.Errorf("Database has no merkle bucket?")
 			return
 		}
 		merkles := merkleBucket.Bucket(merkleLevelKey(level))
@@ -292,13 +327,13 @@ func (self *db) Hashes(key []byte, level uint) (result [256][]byte, err error) {
 			return
 		}
 		cursor := merkles.Cursor()
-		newKey := make([]byte, len(key)+1)
-		copy(newKey, key)
-		start := levelStart(level-1, newKey)
-		end := levelEnd(level-1, newKey)
+		start := levelStart(level-1, key)
+		end := levelEnd(level-1, key)
 		toTheEnd := len(end) == 1 && end[0] == 0
 		for k, v := cursor.Seek(start); k != nil && (toTheEnd || bytes.Compare(k, end) < 0); k, v = cursor.Next() {
-			result[k[int(level-1)]] = v
+			newV := make([]byte, len(v))
+			copy(newV, v)
+			result[k[int(level-1)]] = newV
 		}
 		return
 	}); err != nil {
@@ -311,9 +346,14 @@ func (self *db) Hash() (result []byte, err error) {
 	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
 		merkleBucket := tx.Bucket(merkleBucketKey)
 		if merkleBucket == nil {
+			err = fmt.Errorf("Database has no merkle bucket?")
 			return
 		}
-		result = merkleBucket.Bucket(merkleLevelKey(0)).Get([]byte{0})
+		merkles := merkleBucket.Bucket(merkleLevelKey(0))
+		if merkles == nil {
+			return
+		}
+		result = merkles.Get([]byte{0})
 		return
 	}); err != nil {
 		return
@@ -338,6 +378,7 @@ func (self *db) Get(key []byte) (result []byte, err error) {
 	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
 		valueBucket := tx.Bucket(valueBucketKey)
 		if valueBucket == nil {
+			err = fmt.Errorf("Database has no value bucket?")
 			return
 		}
 		result = valueBucket.Get(key)
