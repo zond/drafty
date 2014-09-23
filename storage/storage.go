@@ -31,7 +31,8 @@ type DB interface {
 	GetString(string) (string, error)
 	Delete([]byte) error
 	DeleteString(string) error
-	Sync(Synchronizable, Range, OverwriteFunc) error
+	Sync(Synchronizable, Range, OverwriteFunc, uint64) (uint64, error)
+	SyncAll(Synchronizable, Range, OverwriteFunc) error
 	View(func(*bolt.Bucket) error) error
 	PP() string
 	ToSortedMap() ([][2][]byte, error)
@@ -225,7 +226,7 @@ func (self Range) Empty() bool {
 	return self.FromInc == nil && self.ToExc == nil
 }
 
-func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, overwriteFunc OverwriteFunc) (err error) {
+func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, overwriteFunc OverwriteFunc, maxOps uint64) (ops uint64, err error) {
 	hashes, err := self.Hashes(prefix, level)
 	if err != nil {
 		return
@@ -259,16 +260,34 @@ func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, overw
 								return
 							}
 						}
+						ops++
+						if ops >= maxOps {
+							return
+						}
 					}
 				}
-				self.sync(o, level+1, newPrefix, r, overwriteFunc)
+				var newOps uint64
+				if newOps, err = self.sync(o, level+1, newPrefix, r, overwriteFunc, maxOps-ops); err != nil {
+					return
+				}
+				ops += newOps
+				if ops >= maxOps {
+					return
+				}
 			}
 		}
 	}
 	return
 }
 
-func (self *db) Sync(o Synchronizable, r Range, overwriteFunc OverwriteFunc) (err error) {
+func (self *db) SyncAll(o Synchronizable, r Range, overwriteFunc OverwriteFunc) (err error) {
+	var ops uint64
+	for ops, err = self.Sync(o, r, overwriteFunc, uint64(0xffffffffffffffff)); err == nil && ops > 0; ops, err = self.Sync(o, r, overwriteFunc, uint64(0xffffffffffffffff)) {
+	}
+	return
+}
+
+func (self *db) Sync(o Synchronizable, r Range, overwriteFunc OverwriteFunc, maxOps uint64) (ops uint64, err error) {
 	eq, err := self.Equal(o)
 	if err != nil {
 		return
@@ -276,7 +295,7 @@ func (self *db) Sync(o Synchronizable, r Range, overwriteFunc OverwriteFunc) (er
 	if eq {
 		return
 	}
-	return self.sync(o, 1, nil, r, overwriteFunc)
+	return self.sync(o, 1, nil, r, overwriteFunc, maxOps)
 }
 
 func (self *db) Equal(o Synchronizable) (result bool, err error) {

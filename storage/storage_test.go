@@ -53,7 +53,7 @@ func TestLevels(t *testing.T) {
 	}
 }
 
-func TestPartialSync(t *testing.T) {
+func TestPartialSyncAll(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		withDB(t, func(db1 DB) {
 			withDB(t, func(db2 DB) {
@@ -74,7 +74,7 @@ func TestPartialSync(t *testing.T) {
 					FromInc: from,
 					ToExc:   to,
 				}
-				if err := db1.Sync(db2, r, copyForwardFunc); err != nil {
+				if err := db1.SyncAll(db2, r, copyForwardFunc); err != nil {
 					t.Fatalf("%v", err)
 				}
 				if err := db1.View(func(b1 *bolt.Bucket) (err error) {
@@ -157,21 +157,51 @@ func copyForwardFunc(a, b []byte) bool {
 func TestSync(t *testing.T) {
 	withDB(t, func(db1 DB) {
 		withDB(t, func(db2 DB) {
+			if err := db1.PutString("a", "a"); err != nil {
+				t.Fatalf("%v", err)
+			}
+			if err := db1.PutString("b", "b"); err != nil {
+				t.Fatalf("%v", err)
+			}
+			if err := db1.PutString("c", "c"); err != nil {
+				t.Fatalf("%v", err)
+			}
+			if ops, err := db1.Sync(db2, Range{}, copyForwardFunc, 1); err != nil || ops != 1 {
+				t.Fatalf("%v", err)
+			}
+			m2, err := db2.ToSortedMap()
+			if err != nil {
+				t.Fatalf("%v", err)
+			}
+			if !reflect.DeepEqual(m2, [][2][]byte{
+				[2][]byte{
+					[]byte("a"), []byte("a"),
+				},
+			}) {
+				t.Errorf("not right!")
+			}
+		})
+	})
+}
+
+func TestSyncAll(t *testing.T) {
+	withDB(t, func(db1 DB) {
+		withDB(t, func(db2 DB) {
 			for i := 0; i < 1000; i++ {
 				if err := db1.Put(randomBytes(4), randomBytes(4)); err != nil {
-					return
+					t.Fatalf("%v", err)
 				}
 				if err := db1.Delete(randomBytes(4)); err != nil {
-					return
+					t.Fatalf("%v", err)
 				}
 				if err := db2.Put(randomBytes(4), randomBytes(4)); err != nil {
-					return
+					t.Fatalf("%v", err)
 				}
 				if err := db2.Delete(randomBytes(4)); err != nil {
-					return
+					t.Fatalf("%v", err)
 				}
 			}
-			if err := db1.Sync(db2, Range{}, copyForwardFunc); err != nil {
+			if err := db1.SyncAll(db2, Range{}, copyForwardFunc); err != nil {
 				t.Fatalf("%v", err)
 			}
 			if eq, err := db2.Equal(db2); err != nil {
