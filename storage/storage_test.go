@@ -54,32 +54,21 @@ func TestLevels(t *testing.T) {
 }
 
 func TestPartialSync(t *testing.T) {
-	for i := 0; i < 1; i++ {
+	for i := 0; i < 10; i++ {
 		withDB(t, func(db1 DB) {
 			withDB(t, func(db2 DB) {
-				for i := 0; i < 10; i++ {
-					if err := db1.Put(randomBytes(2), randomBytes(2)); err != nil {
+				for i := 0; i < 1000; i++ {
+					if err := db1.Put(randomBytes(4), randomBytes(4)); err != nil {
+						return
+					}
+					if err := db1.Delete(randomBytes(4)); err != nil {
 						return
 					}
 				}
-				for i := 0; i < 10; i++ {
-					if err := db1.Delete(randomBytes(2)); err != nil {
-						return
-					}
-				}
-				m1, err := db1.ToSortedMap()
-				if err != nil {
-					t.Fatalf("%v", err)
-				}
-				m2, err := db2.ToSortedMap()
-				if err != nil {
-					t.Fatalf("%v", err)
-				}
-				fmt.Printf("Before\n%+v\n%+v\n", m1, m2)
-				from := randomBytes(2)
+				from := randomBytes(4)
 				var to []byte
 				for to == nil || bytes.Compare(to, from) < 0 {
-					to = randomBytes(2)
+					to = randomBytes(4)
 				}
 				r := Range{
 					FromInc: from,
@@ -94,14 +83,24 @@ func TestPartialSync(t *testing.T) {
 						for k1, v1 := c1.First(); k1 != nil; k1, v1 = c1.Next() {
 							if r.Within(k1) {
 								if bytes.Compare(v1, b2.Get(k1)) != 0 {
-									t.Errorf("Wanted %#v => %#v to be synced, but got %#v", string(k1), string(v1), string(b2.Get(k1)))
+									t.Errorf("Synced %+v. Wanted %v => %v to be synced, but got %v", r, k1, v1, b2.Get(k1))
 								}
 							} else {
 								if v2 := b2.Get(k1); v2 != nil {
-									t.Errorf("Wanted %#v => %#v to NOT be synced, but got %#v", string(k1), string(v1), string(b2.Get(k1)))
+									t.Errorf("Synced %+v. Wanted %v => %v to NOT be synced, but got %v", r, k1, v1, b2.Get(k1))
 								}
 							}
 						}
+						c2 := b2.Cursor()
+						for k2, v2 := c2.First(); k2 != nil; k2, v2 = c2.Next() {
+							if bytes.Compare(v2, b1.Get(k2)) != 0 {
+								t.Errorf("Wrong value")
+							}
+							if !r.Within(k2) {
+								t.Errorf("Wrong key")
+							}
+						}
+						fmt.Printf("Successfully synced %v keys within %+v\n", b2.Stats().KeyN, r)
 						return
 					})
 				}); err != nil {
@@ -162,13 +161,13 @@ func TestSync(t *testing.T) {
 				if err := db1.Put(randomBytes(4), randomBytes(4)); err != nil {
 					return
 				}
-				if err := db1.Delete(randomBytes(2)); err != nil {
+				if err := db1.Delete(randomBytes(4)); err != nil {
 					return
 				}
 				if err := db2.Put(randomBytes(4), randomBytes(4)); err != nil {
 					return
 				}
-				if err := db2.Delete(randomBytes(2)); err != nil {
+				if err := db2.Delete(randomBytes(4)); err != nil {
 					return
 				}
 			}

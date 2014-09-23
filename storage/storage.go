@@ -209,6 +209,18 @@ func (self Range) Within(k []byte) bool {
 	return (self.FromInc == nil || bytes.Compare(self.FromInc, k) < 1) && (self.ToExc == nil || bytes.Compare(self.ToExc, k) > 0)
 }
 
+func (self Range) PrefixWithin(k []byte) bool {
+	from := self.FromInc
+	if len(from) > len(k) {
+		from = self.FromInc[:len(k)]
+	}
+	to := self.ToExc
+	if len(to) > len(k) {
+		to = self.ToExc[:len(k)]
+	}
+	return (from == nil || bytes.Compare(from, k) < 1) && (to == nil || bytes.Compare(to, k) > -1)
+}
+
 func (self Range) Empty() bool {
 	return self.FromInc == nil && self.ToExc == nil
 }
@@ -222,41 +234,35 @@ func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, overw
 	if err != nil {
 		return
 	}
-	start := 0
-	end := 255
-	if uint(len(r.FromInc)) >= level {
-		start = int(r.FromInc[level-1])
-	}
-	if uint(len(r.ToExc)) >= level {
-		end = int(r.ToExc[level-1])
-	}
-	for i := start; i <= end; i++ {
-		if bytes.Compare(hashes[i], oHashes[i]) != 0 {
-			newPrefix := make([]byte, len(prefix)+1)
-			copy(newPrefix, prefix)
-			newPrefix[len(prefix)] = byte(i)
-			if r.Within(newPrefix) {
-				var value []byte
-				if value, err = self.Get(newPrefix); err != nil {
-					return
-				}
-				var oValue []byte
-				if oValue, err = o.Get(newPrefix); err != nil {
-					return
-				}
-				if bytes.Compare(value, oValue) != 0 {
-					if overwriteFunc(value, oValue) {
-						if err = o.Put(newPrefix, value); err != nil {
-							return
-						}
-					} else {
-						if err = self.Put(newPrefix, oValue); err != nil {
-							return
+	newPrefix := make([]byte, len(prefix)+1)
+	copy(newPrefix, prefix)
+	for i := 0; i < 256; i++ {
+		newPrefix[len(prefix)] = byte(i)
+		if r.PrefixWithin(newPrefix) {
+			if bytes.Compare(hashes[i], oHashes[i]) != 0 {
+				if r.Within(newPrefix) {
+					var value []byte
+					if value, err = self.Get(newPrefix); err != nil {
+						return
+					}
+					var oValue []byte
+					if oValue, err = o.Get(newPrefix); err != nil {
+						return
+					}
+					if bytes.Compare(value, oValue) != 0 {
+						if overwriteFunc(value, oValue) {
+							if err = o.Put(newPrefix, value); err != nil {
+								return
+							}
+						} else {
+							if err = self.Put(newPrefix, oValue); err != nil {
+								return
+							}
 						}
 					}
 				}
+				self.sync(o, level+1, newPrefix, r, overwriteFunc)
 			}
-			self.sync(o, level+1, newPrefix, r, overwriteFunc)
 		}
 	}
 	return
