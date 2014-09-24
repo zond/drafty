@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/zond/drafty/consensual"
+	"github.com/zond/drafty/node"
 )
 
 func main() {
@@ -21,7 +21,7 @@ func main() {
 
 	flag.Parse()
 
-	n, err := consensual.New(fmt.Sprintf("%08x", rand.Int63()), *addr, *dir)
+	n, err := node.New(fmt.Sprintf("%08x", rand.Int63()), *addr, *dir)
 	if err != nil {
 		panic(err)
 	}
