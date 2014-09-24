@@ -75,6 +75,21 @@ func (self *Node) Stop() (err error) {
 	return
 }
 
+// MasterOf returns true if self is master of key
+func (self *Node) MasterOf(key []byte) (result bool) {
+	return
+}
+
+// BackupOf returns true if self is backup of key
+func (self *Node) BackupOf(key []byte) (result bool) {
+	return
+}
+
+// Backups returns the connectionstrings and ranges for our backups
+func (self *Node) Backups() (result map[string]storage.Range) {
+	return
+}
+
 func (self *Node) Continue() (err error) {
 	atomic.StoreInt32(&self.stopped, 0)
 	return
