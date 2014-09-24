@@ -20,6 +20,7 @@ type Synchronizable interface {
 	Hash() ([]byte, error)
 	Put([]byte, []byte) error
 	Get([]byte) ([]byte, error)
+	Delete([]byte) error
 	Hashes([]byte, uint) ([256][]byte, error)
 }
 
@@ -29,10 +30,9 @@ type DB interface {
 	Close() error
 	PutString(string, string) error
 	GetString(string) (string, error)
-	Delete([]byte) error
 	DeleteString(string) error
-	Sync(Synchronizable, Range, OverwriteFunc, uint64) (uint64, error)
-	SyncAll(Synchronizable, Range, OverwriteFunc) error
+	Overwrite(Synchronizable, Range, uint64) (uint64, error)
+	OverwriteAll(Synchronizable, Range) error
 	View(func(*bolt.Bucket) error) error
 	PP() string
 	ToSortedMap() ([][2][]byte, error)
@@ -226,7 +226,7 @@ func (self Range) Empty() bool {
 	return self.FromInc == nil && self.ToExc == nil
 }
 
-func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, overwriteFunc OverwriteFunc, maxOps uint64) (ops uint64, err error) {
+func (self *db) overwrite(o Synchronizable, level uint, prefix []byte, r Range, maxOps uint64) (ops uint64, err error) {
 	hashes, err := self.Hashes(prefix, level)
 	if err != nil {
 		return
@@ -251,12 +251,12 @@ func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, overw
 						return
 					}
 					if bytes.Compare(value, oValue) != 0 {
-						if overwriteFunc(value, oValue) {
-							if err = o.Put(newPrefix, value); err != nil {
+						if value == nil {
+							if err = o.Delete(newPrefix); err != nil {
 								return
 							}
 						} else {
-							if err = self.Put(newPrefix, oValue); err != nil {
+							if err = o.Put(newPrefix, value); err != nil {
 								return
 							}
 						}
@@ -267,7 +267,7 @@ func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, overw
 					}
 				}
 				var newOps uint64
-				if newOps, err = self.sync(o, level+1, newPrefix, r, overwriteFunc, maxOps-ops); err != nil {
+				if newOps, err = self.overwrite(o, level+1, newPrefix, r, maxOps-ops); err != nil {
 					return
 				}
 				ops += newOps
@@ -280,14 +280,14 @@ func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, overw
 	return
 }
 
-func (self *db) SyncAll(o Synchronizable, r Range, overwriteFunc OverwriteFunc) (err error) {
+func (self *db) OverwriteAll(o Synchronizable, r Range) (err error) {
 	var ops uint64
-	for ops, err = self.Sync(o, r, overwriteFunc, uint64(0xffffffffffffffff)); err == nil && ops > 0; ops, err = self.Sync(o, r, overwriteFunc, uint64(0xffffffffffffffff)) {
+	for ops, err = self.Overwrite(o, r, uint64(0xffffffffffffffff)); err == nil && ops > 0; ops, err = self.Overwrite(o, r, uint64(0xffffffffffffffff)) {
 	}
 	return
 }
 
-func (self *db) Sync(o Synchronizable, r Range, overwriteFunc OverwriteFunc, maxOps uint64) (ops uint64, err error) {
+func (self *db) Overwrite(o Synchronizable, r Range, maxOps uint64) (ops uint64, err error) {
 	eq, err := self.Equal(o)
 	if err != nil {
 		return
@@ -295,7 +295,7 @@ func (self *db) Sync(o Synchronizable, r Range, overwriteFunc OverwriteFunc, max
 	if eq {
 		return
 	}
-	return self.sync(o, 1, nil, r, overwriteFunc, maxOps)
+	return self.overwrite(o, 1, nil, r, maxOps)
 }
 
 func (self *db) Equal(o Synchronizable) (result bool, err error) {

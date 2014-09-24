@@ -53,7 +53,7 @@ func TestLevels(t *testing.T) {
 	}
 }
 
-func TestPartialSyncAll(t *testing.T) {
+func TestPartialOverwriteAll(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		withDB(t, func(db1 DB) {
 			withDB(t, func(db2 DB) {
@@ -74,7 +74,7 @@ func TestPartialSyncAll(t *testing.T) {
 					FromInc: from,
 					ToExc:   to,
 				}
-				if err := db1.SyncAll(db2, r, copyForwardFunc); err != nil {
+				if err := db1.OverwriteAll(db2, r); err != nil {
 					t.Fatalf("%v", err)
 				}
 				if err := db1.View(func(b1 *bolt.Bucket) (err error) {
@@ -147,14 +147,7 @@ func randomBytes(l int) (result []byte) {
 	return
 }
 
-func copyForwardFunc(a, b []byte) bool {
-	if a == nil {
-		return false
-	}
-	return true
-}
-
-func TestSync(t *testing.T) {
+func TestOverwrite(t *testing.T) {
 	withDB(t, func(db1 DB) {
 		withDB(t, func(db2 DB) {
 			if err := db1.PutString("a", "a"); err != nil {
@@ -166,7 +159,7 @@ func TestSync(t *testing.T) {
 			if err := db1.PutString("c", "c"); err != nil {
 				t.Fatalf("%v", err)
 			}
-			if ops, err := db1.Sync(db2, Range{}, copyForwardFunc, 1); err != nil || ops != 1 {
+			if ops, err := db1.Overwrite(db2, Range{}, 1); err != nil || ops != 1 {
 				t.Fatalf("%v", err)
 			}
 			m2, err := db2.ToSortedMap()
@@ -184,7 +177,7 @@ func TestSync(t *testing.T) {
 	})
 }
 
-func TestSyncAll(t *testing.T) {
+func TestOverwriteAll(t *testing.T) {
 	withDB(t, func(db1 DB) {
 		withDB(t, func(db2 DB) {
 			for i := 0; i < 1000; i++ {
@@ -201,7 +194,7 @@ func TestSyncAll(t *testing.T) {
 					t.Fatalf("%v", err)
 				}
 			}
-			if err := db1.SyncAll(db2, Range{}, copyForwardFunc); err != nil {
+			if err := db1.OverwriteAll(db2, Range{}); err != nil {
 				t.Fatalf("%v", err)
 			}
 			if eq, err := db2.Equal(db2); err != nil {
