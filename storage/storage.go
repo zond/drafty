@@ -5,12 +5,12 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/boltdb/bolt"
 	"github.com/kr/pretty"
 	"github.com/spaolacci/murmur3"
+	"github.com/zond/drafty/log"
 )
 
 var valueBucketKey = []byte("values")
@@ -254,6 +254,13 @@ type Range struct {
 }
 
 func (self Range) Within(k []byte) bool {
+	cmp := bytes.Compare(self.FromInc, self.ToExc)
+	if cmp == 0 {
+		return true
+	}
+	if cmp > 0 {
+		return (self.FromInc == nil || bytes.Compare(self.FromInc, k) < 1) || (self.ToExc == nil || bytes.Compare(self.ToExc, k) > 0)
+	}
 	return (self.FromInc == nil || bytes.Compare(self.FromInc, k) < 1) && (self.ToExc == nil || bytes.Compare(self.ToExc, k) > 0)
 }
 
@@ -265,6 +272,13 @@ func (self Range) PrefixWithin(k []byte) bool {
 	to := self.ToExc
 	if len(to) > len(k) {
 		to = self.ToExc[:len(k)]
+	}
+	cmp := bytes.Compare(from, to)
+	if cmp == 0 {
+		return true
+	}
+	if cmp > 0 {
+		return (from == nil || bytes.Compare(from, k) < 1) || (to == nil || bytes.Compare(to, k) > -1)
 	}
 	return (from == nil || bytes.Compare(from, k) < 1) && (to == nil || bytes.Compare(to, k) > -1)
 }

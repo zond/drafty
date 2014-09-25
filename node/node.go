@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/boltdb/bolt"
 	"github.com/goraft/raft"
 	"github.com/zond/drafty/log"
 	"github.com/zond/drafty/node/commands"
@@ -21,8 +22,6 @@ import (
 	"github.com/zond/drafty/switchboard"
 )
 
-var metadataBucketKey = []byte("metadata")
-
 func init() {
 	rand.Seed(time.Now().UnixNano())
 	raft.RegisterCommand(&commands.StopCommand{})
@@ -30,6 +29,9 @@ func init() {
 	raft.RegisterCommand(&commands.AddPeerCommand{})
 	raft.RegisterCommand(&commands.RemovePeerCommand{})
 }
+
+var posKey = []byte("pos")
+var metadataBucketKey = []byte("metadata")
 
 type Node struct {
 	pos            []byte
@@ -43,6 +45,7 @@ type Node struct {
 	stopCond       *sync.Cond
 	procsDoneGroup sync.WaitGroup
 	storage        storage.DB
+	metadata       *bolt.DB
 }
 
 func New(addr string, dir string) (result *Node, err error) {
@@ -56,6 +59,9 @@ func New(addr string, dir string) (result *Node, err error) {
 		return
 	}
 	if result.storage, err = storage.New(filepath.Join(result.dir, "storage.db")); err != nil {
+		return
+	}
+	if result.metadata, err = bolt.Open(filepath.Join(result.dir, "metadata.db"), 0700, nil); err != nil {
 		return
 	}
 	return
@@ -227,7 +233,22 @@ func (self *Node) Start(join string) (err error) {
 		err = fmt.Errorf("Node is already started")
 		return
 	}
-	self.pos = self.randomPos()
+	if err = self.metadata.Update(func(tx *bolt.Tx) (err error) {
+		bucket, err := tx.CreateBucketIfNotExists(metadataBucketKey)
+		if err != nil {
+			return
+		}
+		self.pos = bucket.Get(posKey)
+		if self.pos == nil {
+			self.pos = self.randomPos()
+			if err = bucket.Put(posKey, self.pos); err != nil {
+				return
+			}
+		}
+		return
+	}); err != nil {
+		return
+	}
 	logdir := filepath.Join(self.dir, "raft.log")
 	if err = os.RemoveAll(logdir); err != nil {
 		return
