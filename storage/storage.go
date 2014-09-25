@@ -20,7 +20,6 @@ type Synchronizable interface {
 	Hash() ([]byte, error)
 	Put([]byte, Value) error
 	Get([]byte) (Value, error)
-	Delete([]byte) error
 	Hashes([]byte, uint) ([256][]byte, error)
 }
 
@@ -38,6 +37,7 @@ type DB interface {
 	Close() error
 	PutString(string, string) error
 	GetString(string) (string, error)
+	Delete([]byte) error
 	DeleteString(string) error
 	Sync(Synchronizable, Range, uint64) (uint64, error)
 	SyncAll(Synchronizable, Range) error

@@ -2,31 +2,29 @@ package transport
 
 import (
 	"bytes"
-	"encoding/hex"
 	"io"
 	"runtime/debug"
 	"strings"
 
 	"github.com/goraft/raft"
 	"github.com/zond/drafty/log"
+	"github.com/zond/drafty/node/commands"
 	"github.com/zond/drafty/switchboard"
 )
 
-type encodeDecoder interface {
+type encoder interface {
 	Encode(io.Writer) (int, error)
+}
+
+type decoder interface {
 	Decode(io.Reader) (int, error)
 }
 
-type Stopper interface {
-	WhileStopped(func() error) error
+type RPCServer struct {
+	Raft raft.Server
 }
 
-type RPC struct {
-	Raft    raft.Server
-	Stopper Stopper
-}
-
-func (self *RPC) setBytes(item encodeDecoder, resp *[]byte) (err error) {
+func (self *RPCServer) setBytes(item encoder, resp *[]byte) (err error) {
 	buf := &bytes.Buffer{}
 	if _, err = item.Encode(buf); err != nil {
 		return
@@ -35,7 +33,7 @@ func (self *RPC) setBytes(item encodeDecoder, resp *[]byte) (err error) {
 	return
 }
 
-func (self *RPC) RequestVote(req []byte, resp *[]byte) (err error) {
+func (self *RPCServer) RequestVote(req []byte, resp *[]byte) (err error) {
 	request := &raft.RequestVoteRequest{}
 	if _, err = request.Decode(bytes.NewBuffer(req)); err != nil {
 		return
@@ -44,7 +42,7 @@ func (self *RPC) RequestVote(req []byte, resp *[]byte) (err error) {
 	return self.setBytes(response, resp)
 }
 
-func (self *RPC) AppendEntries(req []byte, resp *[]byte) (err error) {
+func (self *RPCServer) AppendEntries(req []byte, resp *[]byte) (err error) {
 	request := &raft.AppendEntriesRequest{}
 	if _, err = request.Decode(bytes.NewBuffer(req)); err != nil {
 		return
@@ -56,7 +54,7 @@ func (self *RPC) AppendEntries(req []byte, resp *[]byte) (err error) {
 	return
 }
 
-func (self *RPC) RequestSnapshot(req []byte, resp *[]byte) (err error) {
+func (self *RPCServer) RequestSnapshot(req []byte, resp *[]byte) (err error) {
 	request := &raft.SnapshotRequest{}
 	if _, err = request.Decode(bytes.NewBuffer(req)); err != nil {
 		return
@@ -65,7 +63,7 @@ func (self *RPC) RequestSnapshot(req []byte, resp *[]byte) (err error) {
 	return self.setBytes(response, resp)
 }
 
-func (self *RPC) SnapshotRecoveryRequest(req []byte, resp *[]byte) (err error) {
+func (self *RPCServer) SnapshotRecoveryRequest(req []byte, resp *[]byte) (err error) {
 	request := &raft.SnapshotRecoveryRequest{}
 	if _, err = request.Decode(bytes.NewBuffer(req)); err != nil {
 		return
@@ -78,24 +76,22 @@ type JoinResponse struct {
 	Name string
 }
 
-func (self *RPC) Join(req *raft.DefaultJoinCommand, result *JoinResponse) (err error) {
+func (self *RPCServer) Join(req *raft.DefaultJoinCommand, result *JoinResponse) (err error) {
 	if self.Raft.Name() != self.Raft.Leader() {
 		return switchboard.Switch.Call(self.Raft.Peers()[self.Raft.Leader()].ConnectionString, "Raft.Join", req, result)
 	}
-	if err = self.Stopper.WhileStopped(func() (err error) {
-		if _, err = self.Raft.Do(req); err != nil {
-			log.Warnf("Unable to add new node %v: %v", req.Name, err)
-			return
-		}
-		return
-	}); err != nil {
+	if _, err = self.Raft.Do(req); err != nil {
+		log.Warnf("Unable to add new node %v: %v", req.Name, err)
 		return
 	}
-	log.Infof("%v accepted %v", hex.EncodeToString([]byte(self.Raft.Name())), hex.EncodeToString([]byte(req.NodeName())))
 	*result = JoinResponse{
 		Name: self.Raft.Name(),
 	}
 	return
+}
+
+type Stopper interface {
+	WhileStopped(func() error) error
 }
 
 type RPCTransport struct {
@@ -103,7 +99,7 @@ type RPCTransport struct {
 	Stopper Stopper
 }
 
-func (self *RPCTransport) callEncoded(peer *raft.Peer, service string, req encodeDecoder, resp encodeDecoder) (err error) {
+func (self *RPCTransport) callEncoded(peer *raft.Peer, service string, req encoder, resp decoder) (err error) {
 	buf := &bytes.Buffer{}
 	if _, err = req.Encode(buf); err != nil {
 		log.Debugf("Failed calling %v#%v: %v\n%s", peer.ConnectionString, service, err, debug.Stack())
@@ -113,18 +109,23 @@ func (self *RPCTransport) callEncoded(peer *raft.Peer, service string, req encod
 	if err = switchboard.Switch.Call(peer.ConnectionString, service, buf.Bytes(), &b); err != nil {
 		log.Debugf("Failed calling %v#%v: %v\n%s", peer.ConnectionString, service, err, debug.Stack())
 		if strings.Contains(err.Error(), "connection refused") {
+			if _, err = self.Raft.Do(&raft.DefaultLeaveCommand{
+				Name: peer.Name,
+			}); err != nil {
+				log.Warnf("Unable to kick unreachable node %v: %v", peer.Name, err)
+				return
+			}
 			if err = self.Stopper.WhileStopped(func() (err error) {
-				if _, err = self.Raft.Do(&raft.DefaultLeaveCommand{
+				if _, err = self.Raft.Do(&commands.RemovePeerCommand{
 					Name: peer.Name,
 				}); err != nil {
-					log.Warnf("Unable to kick unreachable node %v: %v", peer.Name, err)
-					return
+					log.Warnf("Unable to kick unreachable node %v: %v", peer.Name)
 				}
+				log.Infof("%v kicked %v", self.Raft.Name(), peer.Name)
 				return
 			}); err != nil {
 				return
 			}
-			log.Infof("%v kicked %v", self.Raft.Name(), peer.Name)
 		}
 		return
 	}
