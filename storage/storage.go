@@ -3,7 +3,10 @@ package storage
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/boltdb/bolt"
 	"github.com/kr/pretty"
@@ -15,17 +18,18 @@ var merkleBucketKey = []byte("merkles")
 
 type Synchronizable interface {
 	Hash() ([]byte, error)
-	Put([]byte, []byte) error
-	Get([]byte) ([]byte, error)
+	Put([]byte, Value) error
+	Get([]byte) (Value, error)
 	Delete([]byte) error
 	Hashes([]byte, uint) ([256][]byte, error)
 }
 
-type Direction bool
+const (
+	MaxTombstoneAge = time.Hour
+)
 
 const (
-	Outwards Direction = false
-	Inwards  Direction = true
+	deleted = 1 << iota
 )
 
 type DB interface {
@@ -35,11 +39,41 @@ type DB interface {
 	PutString(string, string) error
 	GetString(string) (string, error)
 	DeleteString(string) error
-	Sync(Synchronizable, Range, Direction, uint64) (uint64, error)
-	SyncAll(Synchronizable, Range, Direction) error
+	Sync(Synchronizable, Range, uint64) (uint64, error)
+	SyncAll(Synchronizable, Range) error
 	View(func(*bolt.Bucket) error) error
 	PP() string
 	ToSortedMap() ([][2][]byte, error)
+}
+
+type Value []byte
+
+func (self Value) WriteTimestamp() (result int64) {
+	result += int64(self[8] << 7)
+	result += int64(self[9] << 6)
+	result += int64(self[10] << 5)
+	result += int64(self[11] << 4)
+	result += int64(self[12] << 3)
+	result += int64(self[13] << 2)
+	result += int64(self[14] << 1)
+	result += int64(self[15])
+	return
+}
+
+func (self Value) ReadTimestamp() (result int64) {
+	result += int64(self[0] << 7)
+	result += int64(self[1] << 6)
+	result += int64(self[2] << 5)
+	result += int64(self[3] << 4)
+	result += int64(self[4] << 3)
+	result += int64(self[5] << 2)
+	result += int64(self[6] << 1)
+	result += int64(self[7])
+	return
+}
+
+func (self Value) Deleted() bool {
+	return self[16]&deleted == deleted
 }
 
 type db struct {
@@ -139,12 +173,21 @@ func levelEnd(level uint, key []byte) (result []byte) {
 }
 
 func (self *db) hash(valueBucket, hashBucket *bolt.Bucket, key []byte, level uint) (result []byte, start []byte, sources int, err error) {
+	cutoff := time.Now().Add(-MaxTombstoneAge).UnixNano()
 	hash := murmur3.New128()
-	if val := valueBucket.Get(key); val != nil {
-		if _, err = hash.Write(val); err != nil {
-			return
+	if val := Value(valueBucket.Get(key)); val != nil {
+		if val.Deleted() {
+			if val.WriteTimestamp() < cutoff && val.ReadTimestamp() < cutoff {
+				if err = valueBucket.Delete(key); err != nil {
+					return
+				}
+			}
+		} else {
+			if _, err = hash.Write(val); err != nil {
+				return
+			}
+			sources++
 		}
-		sources++
 	}
 	start = levelStart(level, key)
 	end := levelEnd(level, key)
@@ -230,7 +273,11 @@ func (self Range) Empty() bool {
 	return self.FromInc == nil && self.ToExc == nil
 }
 
-func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOps uint64, direction Direction) (ops uint64, err error) {
+func (self Range) String() string {
+	return fmt.Sprintf("Range{%v-%v}", hex.EncodeToString(self.FromInc), hex.EncodeToString(self.ToExc))
+}
+
+func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOps uint64) (ops uint64, err error) {
 	hashes, err := self.Hashes(prefix, level)
 	if err != nil {
 		return
@@ -246,27 +293,36 @@ func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOp
 		if r.PrefixWithin(newPrefix) {
 			if bytes.Compare(hashes[i], oHashes[i]) != 0 {
 				if r.Within(newPrefix) {
-					var value []byte
+					var value Value
 					if value, err = self.Get(newPrefix); err != nil {
 						return
 					}
-					var oValue []byte
+					var oValue Value
 					if oValue, err = o.Get(newPrefix); err != nil {
 						return
 					}
 					if bytes.Compare(value, oValue) != 0 {
+						var vRTS int64
+						var vWTS int64
+						var oRTS int64
+						var oWTS int64
+						if value != nil {
+							vRTS = value.ReadTimestamp()
+							vWTS = value.WriteTimestamp()
+						}
+						if oValue != nil {
+							oRTS = oValue.ReadTimestamp()
+							oWTS = oValue.WriteTimestamp()
+						}
 						dst, target := o, value
-						if direction == Inwards {
+						if vRTS < oRTS && vWTS > oWTS {
+							log.Fatalf("%v has greater read timestamp but less write timestamp than %v", oValue, value)
+						}
+						if vRTS < oRTS || vWTS < oWTS {
 							dst, target = self, oValue
 						}
-						if target == nil {
-							if err = dst.Delete(newPrefix); err != nil {
-								return
-							}
-						} else {
-							if err = dst.Put(newPrefix, target); err != nil {
-								return
-							}
+						if err = dst.Put(newPrefix, target); err != nil {
+							return
 						}
 						ops++
 						if ops >= maxOps {
@@ -275,7 +331,7 @@ func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOp
 					}
 				}
 				var newOps uint64
-				if newOps, err = self.sync(o, level+1, newPrefix, r, maxOps-ops, direction); err != nil {
+				if newOps, err = self.sync(o, level+1, newPrefix, r, maxOps-ops); err != nil {
 					return
 				}
 				ops += newOps
@@ -288,14 +344,14 @@ func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOp
 	return
 }
 
-func (self *db) SyncAll(o Synchronizable, r Range, direction Direction) (err error) {
+func (self *db) SyncAll(o Synchronizable, r Range) (err error) {
 	var ops uint64
-	for ops, err = self.Sync(o, r, direction, uint64(0xffffffffffffffff)); err == nil && ops > 0; ops, err = self.Sync(o, r, direction, uint64(0xffffffffffffffff)) {
+	for ops, err = self.Sync(o, r, uint64(0xffffffffffffffff)); err == nil && ops > 0; ops, err = self.Sync(o, r, uint64(0xffffffffffffffff)) {
 	}
 	return
 }
 
-func (self *db) Sync(o Synchronizable, r Range, direction Direction, maxOps uint64) (ops uint64, err error) {
+func (self *db) Sync(o Synchronizable, r Range, maxOps uint64) (ops uint64, err error) {
 	eq, err := self.Equal(o)
 	if err != nil {
 		return
@@ -303,7 +359,7 @@ func (self *db) Sync(o Synchronizable, r Range, direction Direction, maxOps uint
 	if eq {
 		return
 	}
-	return self.sync(o, 1, nil, r, maxOps, direction)
+	return self.sync(o, 1, nil, r, maxOps)
 }
 
 func (self *db) Equal(o Synchronizable) (result bool, err error) {
@@ -395,7 +451,9 @@ func (self *db) Hash() (result []byte, err error) {
 }
 
 func (self *db) PutString(key string, value string) (err error) {
-	return self.Put([]byte(key), []byte(value))
+	val := make([]byte, 17+len(value))
+	copy(val[17:], value)
+	return self.Put([]byte(key), val)
 }
 
 func (self *db) GetString(key string) (result string, err error) {
@@ -403,18 +461,18 @@ func (self *db) GetString(key string) (result string, err error) {
 	if err != nil {
 		return
 	}
-	result = string(res)
+	result = string(res[17:])
 	return
 }
 
-func (self *db) Get(key []byte) (result []byte, err error) {
+func (self *db) Get(key []byte) (result Value, err error) {
 	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
 		valueBucket := tx.Bucket(valueBucketKey)
 		if valueBucket == nil {
 			err = fmt.Errorf("Database has no value bucket?")
 			return
 		}
-		result = valueBucket.Get(key)
+		result = Value(valueBucket.Get(key))
 		return
 	}); err != nil {
 		return
@@ -448,7 +506,11 @@ func (self *db) Delete(key []byte) (err error) {
 	}
 	return
 }
-func (self *db) Put(key []byte, value []byte) (err error) {
+func (self *db) Put(key []byte, value Value) (err error) {
+	if len(value) < 17 {
+		err = fmt.Errorf("%v needs to be at least 17 bytes long to have a read timestamp (first 8 bytes), write timestamp (next 8 bytes) and flag byte", value)
+		return
+	}
 	if err = self.bolt.Update(func(tx *bolt.Tx) (err error) {
 		valueBucket, err := tx.CreateBucketIfNotExists(valueBucketKey)
 		if err != nil {
