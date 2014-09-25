@@ -2,8 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
-	"math/rand"
 	"os"
 	"path/filepath"
 
@@ -21,7 +19,7 @@ func main() {
 
 	flag.Parse()
 
-	n, err := node.New(fmt.Sprintf("%08x", rand.Int63()), *addr, *dir)
+	n, err := node.New(*addr, *dir)
 	if err != nil {
 		panic(err)
 	}
