@@ -2,6 +2,7 @@ package transport
 
 import (
 	"bytes"
+	"encoding/hex"
 	"io"
 	"runtime/debug"
 	"strings"
@@ -90,7 +91,7 @@ func (self *RPC) Join(req *raft.DefaultJoinCommand, result *JoinResponse) (err e
 	}); err != nil {
 		return
 	}
-	log.Infof("%v accepted %v", self.Raft.Name(), req.NodeName())
+	log.Infof("%v accepted %v", hex.EncodeToString([]byte(self.Raft.Name())), hex.EncodeToString([]byte(req.NodeName())))
 	*result = JoinResponse{
 		Name: self.Raft.Name(),
 	}
