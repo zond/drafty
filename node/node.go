@@ -55,15 +55,6 @@ func New(addr string, dir string) (result *Node, err error) {
 		ring:   ring.New(),
 	}
 	result.stopCond = sync.NewCond(&result.stopLock)
-	if err = os.MkdirAll(result.dir, 0700); err != nil {
-		return
-	}
-	if result.storage, err = storage.New(filepath.Join(result.dir, "storage.db")); err != nil {
-		return
-	}
-	if result.metadata, err = bolt.Open(filepath.Join(result.dir, "metadata.db"), 0700, nil); err != nil {
-		return
-	}
 	return
 }
 
@@ -115,7 +106,7 @@ func (self *Node) Continue() (err error) {
 	atomic.StoreInt32(&self.stopped, 0)
 	self.stopCond.Broadcast()
 	go self.synchronize()
-	log.Debugf("%v continues", self)
+	log.Debugf("%v continued", self)
 	return
 }
 
@@ -228,11 +219,7 @@ func (self *Node) AsPeer() (result *ring.Peer) {
 	}
 }
 
-func (self *Node) Start(join string) (err error) {
-	if self.raft != nil {
-		err = fmt.Errorf("Node is already started")
-		return
-	}
+func (self *Node) selectName() (err error) {
 	if err = self.metadata.Update(func(tx *bolt.Tx) (err error) {
 		bucket, err := tx.CreateBucketIfNotExists(metadataBucketKey)
 		if err != nil {
@@ -249,6 +236,10 @@ func (self *Node) Start(join string) (err error) {
 	}); err != nil {
 		return
 	}
+	return
+}
+
+func (self *Node) setupRaft() (err error) {
 	logdir := filepath.Join(self.dir, "raft.log")
 	if err = os.RemoveAll(logdir); err != nil {
 		return
@@ -263,6 +254,23 @@ func (self *Node) Start(join string) (err error) {
 		return
 	}
 	rpcTransport.Raft = self.raft
+	return
+}
+
+func (self *Node) setupPersistence() (err error) {
+	if err = os.MkdirAll(self.dir, 0700); err != nil {
+		return
+	}
+	if self.storage, err = storage.New(filepath.Join(self.dir, "storage.db")); err != nil {
+		return
+	}
+	if self.metadata, err = bolt.Open(filepath.Join(self.dir, "metadata.db"), 0700, nil); err != nil {
+		return
+	}
+	return
+}
+
+func (self *Node) startServing() (err error) {
 	self.server.Serve("Raft", &raftTransport.RPCServer{
 		Raft: self.raft,
 	})
@@ -275,33 +283,66 @@ func (self *Node) Start(join string) (err error) {
 	if err = self.raft.Start(); err != nil {
 		return
 	}
-	if join == "" {
-		if _, err = self.raft.Do(&raft.DefaultJoinCommand{
-			Name:             self.raft.Name(),
-			ConnectionString: self.server.Addr(),
-		}); err != nil {
-			return
-		}
-		if _, err = self.raft.Do(&commands.AddPeerCommand{
-			Peer: self.AsPeer(),
-		}); err != nil {
-			return
-		}
-		log.Infof("%v is cluster leader", self)
-	} else {
-		joinResp := &raftTransport.JoinResponse{}
-		if err = switchboard.Switch.Call(join, "Raft.Join", &raft.DefaultJoinCommand{
-			Name:             self.raft.Name(),
-			ConnectionString: self.server.Addr(),
-		}, joinResp); err != nil {
-			return
-		}
-		master := &ring.Peer{}
-		if err = switchboard.Switch.Call(join, "Node.AddPeer", self.AsPeer(), master); err != nil {
-			return
-		}
-		log.Infof("%v joined %v", self, master)
+	return
+}
+
+func (self *Node) lead() (err error) {
+	if _, err = self.raft.Do(&raft.DefaultJoinCommand{
+		Name:             self.raft.Name(),
+		ConnectionString: self.server.Addr(),
+	}); err != nil {
 		return
+	}
+	if _, err = self.raft.Do(&commands.AddPeerCommand{
+		Peer: self.AsPeer(),
+	}); err != nil {
+		return
+	}
+	log.Infof("%v is cluster leader", self)
+	return
+}
+
+func (self *Node) join(leader string) (err error) {
+	joinResp := &raftTransport.JoinResponse{}
+	if err = switchboard.Switch.Call(leader, "Raft.Join", &raft.DefaultJoinCommand{
+		Name:             self.raft.Name(),
+		ConnectionString: self.server.Addr(),
+	}, joinResp); err != nil {
+		return
+	}
+	master := &ring.Peer{}
+	if err = switchboard.Switch.Call(leader, "Node.AddPeer", self.AsPeer(), master); err != nil {
+		return
+	}
+	log.Infof("%v joined %v", self, master)
+	return
+}
+
+func (self *Node) Start(join string) (err error) {
+	if self.raft != nil {
+		err = fmt.Errorf("Node is already started")
+		return
+	}
+	if err = self.setupPersistence(); err != nil {
+		return
+	}
+	if err = self.selectName(); err != nil {
+		return
+	}
+	if err = self.setupRaft(); err != nil {
+		return
+	}
+	if err = self.startServing(); err != nil {
+		return
+	}
+	if join == "" {
+		if err = self.lead(); err != nil {
+			return
+		}
+	} else {
+		if err = self.join(join); err != nil {
+			return
+		}
 	}
 	return
 }
