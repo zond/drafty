@@ -1,10 +1,13 @@
 package node
 
 import (
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,22 +30,20 @@ func init() {
 }
 
 type Node struct {
-	server    *switchboard.Server
-	dir       string
-	raft      raft.Server
-	name      string
-	stopped   int32
-	waitGroup *sync.WaitGroup
-	storage   storage.DB
+	server         *switchboard.Server
+	dir            string
+	raft           raft.Server
+	stopped        int32
+	stops          uint64
+	stoppedGroup   sync.WaitGroup
+	procsDoneGroup sync.WaitGroup
+	storage        storage.DB
 }
 
-func New(name string, addr string, dir string) (result *Node, err error) {
+func New(addr string, dir string) (result *Node, err error) {
 	result = &Node{
-		server:    switchboard.NewServer(addr),
-		name:      name,
-		dir:       dir,
-		stopped:   0,
-		waitGroup: &sync.WaitGroup{},
+		server: switchboard.NewServer(addr),
+		dir:    dir,
 	}
 	if err = os.MkdirAll(result.dir, 0700); err != nil {
 		return
@@ -70,29 +71,84 @@ func (self *Node) Recovery(b []byte) (err error) {
 }
 
 func (self *Node) Stop() (err error) {
-	atomic.StoreInt32(&self.stopped, 1)
-	self.waitGroup.Wait()
-	return
-}
-
-// MasterOf returns true if self is master of key
-func (self *Node) MasterOf(key []byte) (result bool) {
-	return
-}
-
-// BackupOf returns true if self is backup of key
-func (self *Node) BackupOf(key []byte) (result bool) {
-	return
-}
-
-// Backups returns the connectionstrings and ranges for our backups
-func (self *Node) Backups() (result map[string]storage.Range) {
+	self.stoppedGroup.Add(1)
+	atomic.AddUint64(&self.stops, 1)
+	self.procsDoneGroup.Wait()
 	return
 }
 
 func (self *Node) Continue() (err error) {
-	atomic.StoreInt32(&self.stopped, 0)
+	self.stoppedGroup.Done()
+	go self.synchronize()
 	return
+}
+
+type ring []*raft.Peer
+
+func (self ring) Len() int {
+	return len(self)
+}
+
+func (self ring) Less(i, j int) bool {
+	return self[i].Name < self[j].Name
+}
+
+func (self ring) Swap(i, j int) {
+	self[i], self[j] = self[j], self[i]
+}
+
+func (self ring) successors(name string, n int) (result ring) {
+	result = make(ring, 0, n)
+	for i := sort.Search(len(self), func(p int) bool { return self[p].Name > name }); len(result) < n; i++ {
+		result = append(result, self[i%len(self)])
+	}
+	return
+}
+
+func (self *Node) ring() (result ring) {
+	peers := self.raft.Peers()
+	result = make(ring, 0, 1+len(peers))
+	result = append(result, &raft.Peer{
+		Name:             self.raft.Name(),
+		ConnectionString: self.server.Addr(),
+	})
+	for _, peer := range peers {
+		result = append(result, peer)
+	}
+	sort.Sort(result)
+	return
+}
+
+func (self *Node) successor() (result *raft.Peer) {
+	return self.ring().successors(self.raft.Name(), 1)[0]
+}
+
+func (self *Node) responsibility() (result storage.Range) {
+	result.FromInc = []byte(self.raft.Name())
+	result.ToExc = []byte(self.successor().Name)
+	return
+}
+
+func (self *Node) sync(peer *raft.Peer, r storage.Range) (acted bool, err error) {
+	log.Debugf("%v syncing %v with %v\n", self.name(), r, hex.EncodeToString([]byte(peer.Name)))
+	return
+}
+
+func (self *Node) backups() (result ring) {
+	return self.ring().successors(self.raft.Name(), 3)
+}
+
+func (self *Node) syncBackups() {
+	r := self.responsibility()
+	stops := atomic.LoadUint64(&self.stops)
+	for _, backup := range self.backups() {
+		for acted, err := self.sync(backup, r); err == nil && acted && atomic.LoadUint64(&self.stops) == stops; acted, err = self.sync(backup, r) {
+		}
+	}
+}
+
+func (self *Node) synchronize() {
+	self.syncBackups()
 }
 
 func (self *Node) WhileStopped(f func() error) (err error) {
@@ -114,19 +170,48 @@ func (self *Node) WhileStopped(f func() error) (err error) {
 	return
 }
 
+func (self *Node) randomName() (result string) {
+	i := rand.Int63()
+	b, err := json.Marshal(string([]byte{
+		byte(i >> 7),
+		byte(i >> 6),
+		byte(i >> 5),
+		byte(i >> 4),
+		byte(i >> 3),
+		byte(i >> 2),
+		byte(i >> 1),
+		byte(i >> 0),
+	}))
+	if err != nil {
+		return
+	}
+	if err = json.Unmarshal(b, &result); err != nil {
+		return
+	}
+	return
+}
+
+func (self *Node) name() string {
+	return hex.EncodeToString([]byte(self.raft.Name()))
+}
+
 func (self *Node) Start(join string) (err error) {
 	if self.raft != nil {
 		err = fmt.Errorf("Node is already started")
 		return
 	}
+	name := self.randomName()
 	logdir := filepath.Join(self.dir, "raft.log")
+	if err = os.RemoveAll(logdir); err != nil {
+		return
+	}
 	if err = os.MkdirAll(logdir, 0700); err != nil {
 		return
 	}
 	rpcTransport := &transport.RPCTransport{
 		Stopper: self,
 	}
-	if self.raft, err = raft.NewServer(self.name, logdir, rpcTransport, self, self, self.server.Addr()); err != nil {
+	if self.raft, err = raft.NewServer(name, logdir, rpcTransport, self, self, self.server.Addr()); err != nil {
 		return
 	}
 	rpcTransport.Raft = self.raft
@@ -141,30 +226,23 @@ func (self *Node) Start(join string) (err error) {
 		return
 	}
 	if join == "" {
-		if self.raft.IsLogEmpty() {
-			if _, err = self.raft.Do(&raft.DefaultJoinCommand{
-				Name:             self.raft.Name(),
-				ConnectionString: self.server.Addr(),
-			}); err != nil {
-				return
-			}
-			log.Infof("%v is cluster leader", self.raft.Name())
-		} else {
-			log.Infof("%v recovered log", self.raft.Name())
+		cmd := &raft.DefaultJoinCommand{
+			Name:             self.raft.Name(),
+			ConnectionString: self.server.Addr(),
 		}
-	} else {
-		if !self.raft.IsLogEmpty() {
-			err = fmt.Errorf("Cannot join with an existing log")
+		if _, err = self.raft.Do(cmd); err != nil {
 			return
 		}
+		log.Infof("%v is cluster leader", self.name())
+	} else {
 		resp := &transport.JoinResponse{}
 		if err = switchboard.Switch.Call(join, "Raft.Join", &raft.DefaultJoinCommand{
-			Name:             self.name,
+			Name:             self.raft.Name(),
 			ConnectionString: self.server.Addr(),
 		}, resp); err != nil {
 			return
 		}
-		log.Infof("%v joined %v", self.raft.Name(), resp.Name)
+		log.Infof("%v joined %#v", self.name(), hex.EncodeToString([]byte(resp.Name)))
 		return
 	}
 	return
