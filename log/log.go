@@ -16,37 +16,37 @@ const (
 	Fatal
 )
 
-func log(prefix string, format string, args ...interface{}) {
+func log(f func(string, ...interface{}), prefix string, format string, args ...interface{}) {
 	format = fmt.Sprintf("%v\t%v\t%v", prefix, time.Now(), format)
-	goLog.Printf(format, args...)
+	f(format, args...)
 }
 
 func Debugf(format string, args ...interface{}) {
 	if Level <= Debug {
-		log("DEBUG", format, args...)
+		log(goLog.Printf, "DEBUG", format, args...)
 	}
 }
 
 func Infof(format string, args ...interface{}) {
 	if Level <= Info {
-		log("INFO", format, args...)
+		log(goLog.Printf, "INFO", format, args...)
 	}
 }
 
 func Warnf(format string, args ...interface{}) {
 	if Level <= Warn {
-		log("WARN", format, args...)
+		log(goLog.Printf, "WARN", format, args...)
 	}
 }
 
 func Errorf(format string, args ...interface{}) {
 	if Level <= Error {
-		log("ERROR", format, args...)
+		log(goLog.Printf, "ERROR", format, args...)
 	}
 }
 
 func Fatalf(format string, args ...interface{}) {
 	if Level <= Fatal {
-		log("FATAL", format, args...)
+		log(goLog.Panicf, "FATAL", format, args...)
 	}
 }
