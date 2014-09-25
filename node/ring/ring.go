@@ -43,6 +43,18 @@ func New() *Ring {
 	}
 }
 
+func (self *Ring) Clone() (result *Ring) {
+	result = &Ring{
+		peers:      make(Peers, len(self.peers)),
+		peerByName: make(map[string]*Peer, len(self.peers)),
+	}
+	for i, peer := range self.peers {
+		result.peers[i] = peer
+		result.peerByName[peer.Name] = peer
+	}
+	return
+}
+
 type gobRing struct {
 	Peers      Peers
 	PeerByName map[string]*Peer
@@ -95,6 +107,19 @@ func (self *Ring) RemovePeer(name string) {
 		self.peers = self.peers[:len(self.peers)-1]
 	} else {
 		self.peers = append(self.peers[:i], self.peers[i+1:]...)
+	}
+	return
+}
+
+func (self *Ring) Predecessors(pos []byte, n int) (result Peers) {
+	if len(self.peers) == 0 {
+		return
+	}
+	result = make(Peers, 0, n)
+	for i := sort.Search(len(self.peers), func(p int) bool {
+		return bytes.Compare(self.peers[len(self.peers)-p-1].Pos, pos) < 0
+	}); len(result) < n; i++ {
+		result = append(result, self.peers[len(self.peers)-1-i%len(self.peers)])
 	}
 	return
 }

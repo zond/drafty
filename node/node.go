@@ -33,6 +33,10 @@ func init() {
 var posKey = []byte("pos")
 var metadataBucketKey = []byte("metadata")
 
+const (
+	nBackups = 2
+)
+
 type Node struct {
 	pos            []byte
 	server         *switchboard.Server
@@ -150,18 +154,13 @@ func (self *Node) RemovePeer(name string) (err error) {
 	return
 }
 
-func (self *Node) successor() (result *ring.Peer) {
-	return self.ring.Successors(self.pos, 1)[0]
-}
-
-func (self *Node) responsibility() (result storage.Range) {
-	result.FromInc = self.pos
-	result.ToExc = []byte(self.successor().Pos)
-	return
-}
-
-func (self *Node) sync(peer *ring.Peer, r storage.Range) (acted bool, err error) {
+func (self *Node) syncWith(i int) (acted bool, err error) {
 	if err = self.WhileRunning(func() (err error) {
+		r := storage.Range{
+			FromInc: self.ring.Predecessors(self.pos, 1)[0].Pos,
+			ToExc:   self.pos,
+		}
+		peer := self.ring.Successors(self.pos, nBackups)[i]
 		ops, err := self.storage.Sync(storageTransport.RPCTransport(peer.ConnectionString), r, 1)
 		if err != nil {
 			return
@@ -175,25 +174,16 @@ func (self *Node) sync(peer *ring.Peer, r storage.Range) (acted bool, err error)
 	return
 }
 
-func (self *Node) String() string {
-	return self.AsPeer().String()
-}
-
-func (self *Node) backups() (result ring.Peers) {
-	return self.ring.Successors(self.pos, 3)
-}
-
-func (self *Node) syncBackups() {
-	r := self.responsibility()
+func (self *Node) synchronize() {
 	stops := atomic.LoadUint64(&self.stops)
-	for _, backup := range self.backups() {
-		for acted, err := self.sync(backup, r); err == nil && acted && atomic.LoadUint64(&self.stops) == stops; acted, err = self.sync(backup, r) {
+	for i := 0; i < nBackups; i++ {
+		for acted, err := self.syncWith(i); err == nil && acted && atomic.LoadUint64(&self.stops) == stops; acted, err = self.syncWith(i) {
 		}
 	}
 }
 
-func (self *Node) synchronize() {
-	self.syncBackups()
+func (self *Node) String() string {
+	return self.AsPeer().String()
 }
 
 func (self *Node) randomPos() (result []byte) {

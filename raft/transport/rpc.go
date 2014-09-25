@@ -115,13 +115,14 @@ func (self *RPCTransport) callEncoded(peer *raft.Peer, service string, req encod
 				log.Warnf("Unable to kick unreachable node %v: %v", peer.Name, err)
 				return
 			}
+			log.Infof("%v kicked %v from raft", self.Raft.Name(), peer.Name)
 			if err = self.Stopper.WhileStopped(func() (err error) {
 				if _, err = self.Raft.Do(&commands.RemovePeerCommand{
 					Name: peer.Name,
 				}); err != nil {
 					log.Warnf("Unable to kick unreachable node %v: %v", peer.Name)
 				}
-				log.Infof("%v kicked %v", self.Raft.Name(), peer.Name)
+				log.Infof("%v kicked %v from ring", self.Raft.Name(), peer.Name)
 				return
 			}); err != nil {
 				return

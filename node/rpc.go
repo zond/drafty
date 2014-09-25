@@ -31,3 +31,14 @@ func (self *RPCServer) AddPeer(peer *ring.Peer, resp *ring.Peer) (err error) {
 	*resp = *r
 	return
 }
+
+func (self *RPCServer) GetRing(a *struct{}, result *ring.Ring) (err error) {
+	if err = self.node.WhileRunning(func() (err error) {
+		r := self.node.ring.Clone()
+		*result = *r
+		return
+	}); err != nil {
+		return
+	}
+	return
+}
