@@ -302,10 +302,10 @@ func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOp
 						return
 					}
 					if bytes.Compare(value, oValue) != 0 {
-						var vRTS int64
-						var vWTS int64
-						var oRTS int64
-						var oWTS int64
+						vRTS := int64(-1)
+						vWTS := int64(-1)
+						oRTS := int64(-1)
+						oWTS := int64(-1)
 						if value != nil {
 							vRTS = value.ReadTimestamp()
 							vWTS = value.WriteTimestamp()
