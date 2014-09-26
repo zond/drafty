@@ -2,26 +2,28 @@ package transactor
 
 import (
 	"github.com/zond/drafty/common"
-	"github.com/zond/drafty/node"
+	"github.com/zond/drafty/storage"
 )
 
 type Transactor struct {
-	node    *node.Node
-	txById  map[string][]*common.TX
+	storage storage.DB
+	txById  map[string]*common.TX
 	urByKey map[string][]*common.TX
 	uwByKey map[string][]*common.TX
 }
 
-func New(node *node.Node) (result *Transactor) {
+func New(storage storage.DB) (result *Transactor) {
 	return &Transactor{
-		node:   node,
-		txById: map[string]*common.TX{},
+		storage: storage,
+		txById:  map[string]*common.TX{},
+		urByKey: map[string][]*common.TX{},
+		uwByKey: map[string][]*common.TX{},
 	}
 }
 
 func (self *Transactor) Get(tx *common.TX, key []byte) (result *common.TXGetResp, err error) {
 	// load data from storage
-	value, err := self.node.storage.Get(key)
+	value, err := self.storage.Get(key)
 	if err != nil {
 		return
 	}
@@ -35,15 +37,15 @@ func (self *Transactor) Get(tx *common.TX, key []byte) (result *common.TXGetResp
 	}
 	skey := string(key)
 	// place soft read lock
-	urByKey[skey] = append(urById[skey], tx)
+	self.urByKey[skey] = append(self.urByKey[skey], tx)
 	// create response with value and last write timestamp
 	result = &common.TXGetResp{
 		Value: value.Bytes(),
 		Wrote: value.WriteTimestamp(),
 	}
 	// append ids of all soft write locks to result
-	for _, uw := range uwByKey[skey] {
-		result.UW = append(result.UW, tx.ID)
+	for _, uw := range self.uwByKey[skey] {
+		result.UW = append(result.UW, uw.Id)
 	}
 	return
 }

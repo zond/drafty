@@ -22,6 +22,11 @@ import (
 	storageTransport "github.com/zond/drafty/storage/transport"
 	"github.com/zond/drafty/switchboard"
 	"github.com/zond/drafty/transactor"
+	transactorTransport "github.com/zond/drafty/transactor/transport"
+)
+
+const (
+	maintenanceChunkSize = 16
 )
 
 func init() {
@@ -53,10 +58,9 @@ type Node struct {
 
 func New(addr string, dir string) (result *Node, err error) {
 	result = &Node{
-		server:     switchboard.NewServer(addr),
-		dir:        dir,
-		ring:       ring.New(),
-		transactor: transactor.New(),
+		server: switchboard.NewServer(addr),
+		dir:    dir,
+		ring:   ring.New(),
 	}
 	result.stopCond = sync.NewCond(&result.stopLock)
 	return
@@ -110,6 +114,7 @@ func (self *Node) Continue() (err error) {
 	atomic.StoreInt32(&self.stopped, 0)
 	self.stopCond.Broadcast()
 	go self.synchronize()
+	go self.clean()
 	log.Debugf("%v continued", self)
 	return
 }
@@ -154,14 +159,14 @@ func (self *Node) RemovePeer(name string) (err error) {
 	return
 }
 
-func (self *Node) syncWith(i int) (acted bool, err error) {
+func (self *Node) syncOnceWith(i int) (acted bool, err error) {
 	if err = self.WhileRunning(func() (err error) {
 		r := storage.Range{
 			FromInc: self.ring.Predecessors(self.pos, 1)[0].Pos,
 			ToExc:   self.pos,
 		}
 		peer := self.ring.Successors(self.pos, common.NBackups)[i]
-		ops, err := self.storage.Sync(storageTransport.RPCTransport(peer.ConnectionString), r, 1)
+		ops, err := self.storage.Sync(storageTransport.RPCTransport(peer.ConnectionString), r, maintenanceChunkSize)
 		if err != nil {
 			return
 		}
@@ -174,10 +179,85 @@ func (self *Node) syncWith(i int) (acted bool, err error) {
 	return
 }
 
+func (self *Node) offer(data [][2][]byte) (err error) {
+	for _, kv := range data {
+		key := kv[0]
+		value := storage.Value(kv[1])
+		vRTS := value.ReadTimestamp()
+		vWTS := value.WriteTimestamp()
+		peer := self.ring.Successors(key, 1)[0]
+		current := []byte{}
+		if err = switchboard.Switch.Call(peer.ConnectionString, "Synchronizable.Get", key, &current); err != nil {
+			return
+		}
+		curRTS := int64(-1)
+		curWTS := int64(-1)
+		if current != nil {
+			curRTS = storage.Value(current).ReadTimestamp()
+			curWTS = storage.Value(current).WriteTimestamp()
+		}
+		if curRTS < vRTS && curWTS > vWTS {
+			log.Fatalf("%v has greater read timestamp but less write timestamp than %v", value, current)
+		}
+		if vRTS > curRTS || vWTS > curWTS {
+			if err = switchboard.Switch.Call(peer.ConnectionString, "Synchronizable.Put", kv, nil); err != nil {
+				return
+			}
+		}
+		if err = self.storage.Delete(key); err != nil {
+			return
+		}
+	}
+	return
+}
+
+func (self *Node) cleanOnce() (acted bool, err error) {
+	if err = self.WhileRunning(func() (err error) {
+		toOffer := [][2][]byte{}
+		if err = self.storage.View(func(bucket *bolt.Bucket) (err error) {
+			preds := self.ring.Predecessors(self.pos, common.NBackups+1)
+			cursor := bucket.Cursor()
+			for k, v := cursor.Seek(self.pos); len(toOffer) < maintenanceChunkSize && k != nil && (bytes.Compare(self.pos, k) <= 0 || bytes.Compare(preds[0].Pos, k) > 0); k, v = cursor.Next() {
+				toOffer = append(toOffer, [2][]byte{k, v})
+			}
+			for k, v := cursor.First(); len(toOffer) < maintenanceChunkSize && k != nil && (bytes.Compare(self.pos, k) <= 0 || bytes.Compare(preds[0].Pos, k) > 0); k, v = cursor.Next() {
+				toOffer = append(toOffer, [2][]byte{k, v})
+			}
+			return
+		}); err != nil {
+			return
+		}
+		if err = self.offer(toOffer); err != nil {
+			return
+		}
+		acted = len(toOffer) > 0
+		return
+	}); err != nil {
+		return
+	}
+	return
+}
+
+func (self *Node) clean() {
+	stops := atomic.LoadUint64(&self.stops)
+	var acted bool
+	var err error
+	for acted, err = self.cleanOnce(); err == nil && acted && atomic.LoadUint64(&self.stops) == stops; acted, err = self.cleanOnce() {
+	}
+	if err != nil {
+		log.Warnf("While trying to clean: %v", i, err)
+	}
+}
+
 func (self *Node) synchronize() {
 	stops := atomic.LoadUint64(&self.stops)
 	for i := 0; i < common.NBackups; i++ {
-		for acted, err := self.syncWith(i); err == nil && acted && atomic.LoadUint64(&self.stops) == stops; acted, err = self.syncWith(i) {
+		var acted bool
+		var err error
+		for acted, err = self.syncOnceWith(i); err == nil && acted && atomic.LoadUint64(&self.stops) == stops; acted, err = self.syncOnceWith(i) {
+		}
+		if err != nil {
+			log.Warnf("While trying to sync with backup %v: %v", i, err)
 		}
 	}
 }
@@ -239,6 +319,7 @@ func (self *Node) setupPersistence() (err error) {
 	if self.storage, err = storage.New(filepath.Join(self.dir, "storage.db")); err != nil {
 		return
 	}
+	self.transactor = transactor.New(self.storage)
 	if self.metadata, err = bolt.Open(filepath.Join(self.dir, "metadata.db"), 0700, nil); err != nil {
 		return
 	}
