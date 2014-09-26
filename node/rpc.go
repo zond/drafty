@@ -7,6 +7,15 @@ import (
 	"github.com/zond/drafty/switchboard"
 )
 
+type DebugRPCServer struct {
+	node *Node
+}
+
+func (self *DebugRPCServer) Dump(a struct{}, b *struct{}) (err error) {
+	log.Debugf(self.node.storage.PPStrings())
+	return
+}
+
 type RPCServer struct {
 	node *Node
 }
@@ -32,7 +41,7 @@ func (self *RPCServer) AddPeer(peer *ring.Peer, resp *ring.Peer) (err error) {
 	return
 }
 
-func (self *RPCServer) GetRing(a *struct{}, result *ring.Ring) (err error) {
+func (self *RPCServer) GetRing(a struct{}, result *ring.Ring) (err error) {
 	if err = self.node.WhileRunning(func() (err error) {
 		r := self.node.ring.Clone()
 		*result = *r

@@ -52,7 +52,7 @@ type Node struct {
 	stopLock       sync.Mutex
 	stopCond       *sync.Cond
 	procsDoneGroup sync.WaitGroup
-	storage        storage.DB
+	storage        *storage.DB
 	metadata       *bolt.DB
 }
 
@@ -186,7 +186,7 @@ func (self *Node) offer(data [][2][]byte) (err error) {
 		vRTS := value.ReadTimestamp()
 		vWTS := value.WriteTimestamp()
 		peer := self.ring.Successors(key, 1)[0]
-		current := []byte{}
+		var current []byte
 		if err = switchboard.Switch.Call(peer.ConnectionString, "Synchronizable.Get", key, &current); err != nil {
 			return
 		}
@@ -214,8 +214,9 @@ func (self *Node) offer(data [][2][]byte) (err error) {
 func (self *Node) cleanOnce() (acted bool, err error) {
 	if err = self.WhileRunning(func() (err error) {
 		toOffer := [][2][]byte{}
+		var preds ring.Peers
 		if err = self.storage.View(func(bucket *bolt.Bucket) (err error) {
-			preds := self.ring.Predecessors(self.pos, common.NBackups+1)
+			preds = self.ring.Predecessors(self.pos, common.NBackups+1)
 			cursor := bucket.Cursor()
 			for k, v := cursor.Seek(self.pos); len(toOffer) < maintenanceChunkSize && k != nil && (bytes.Compare(self.pos, k) <= 0 || bytes.Compare(preds[0].Pos, k) > 0); k, v = cursor.Next() {
 				toOffer = append(toOffer, [2][]byte{k, v})
@@ -230,6 +231,7 @@ func (self *Node) cleanOnce() (acted bool, err error) {
 		if err = self.offer(toOffer); err != nil {
 			return
 		}
+		log.Debugf("%v cleaned %v values outside %v\n", self, len(toOffer), storage.Range{preds[0].Pos, self.pos})
 		acted = len(toOffer) > 0
 		return
 	}); err != nil {
@@ -245,7 +247,7 @@ func (self *Node) clean() {
 	for acted, err = self.cleanOnce(); err == nil && acted && atomic.LoadUint64(&self.stops) == stops; acted, err = self.cleanOnce() {
 	}
 	if err != nil {
-		log.Warnf("While trying to clean: %v", i, err)
+		log.Warnf("While trying to clean: %v", err)
 	}
 }
 
@@ -338,6 +340,9 @@ func (self *Node) startServing() (err error) {
 	})
 	self.server.Serve("TX", &transactorTransport.RPCServer{
 		Transactor: self.transactor,
+	})
+	self.server.Serve("Debug", &DebugRPCServer{
+		node: self,
 	})
 	if err = self.raft.Start(); err != nil {
 		return

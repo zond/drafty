@@ -31,21 +31,6 @@ const (
 	deleted = 1 << iota
 )
 
-type DB interface {
-	Synchronizable
-	Equal(Synchronizable) (bool, error)
-	Close() error
-	PutString(string, string) error
-	GetString(string) (string, error)
-	Delete([]byte) error
-	DeleteString(string) error
-	Sync(Synchronizable, Range, uint64) (uint64, error)
-	SyncAll(Synchronizable, Range) error
-	View(func(*bolt.Bucket) error) error
-	PP() string
-	ToSortedMap() ([][2][]byte, error)
-}
-
 type Value []byte
 
 func (self Value) WriteTimestamp() (result int64) {
@@ -80,12 +65,12 @@ func (self Value) Bytes() []byte {
 	return self[17:]
 }
 
-type db struct {
+type DB struct {
 	bolt *bolt.DB
 }
 
-func New(file string) (result DB, err error) {
-	d := &db{}
+func New(file string) (result *DB, err error) {
+	d := &DB{}
 	if d.bolt, err = bolt.Open(file, 0600, nil); err != nil {
 		return
 	}
@@ -104,7 +89,7 @@ func New(file string) (result DB, err error) {
 	return
 }
 
-func (self *db) View(f func(*bolt.Bucket) error) (err error) {
+func (self *DB) View(f func(*bolt.Bucket) error) (err error) {
 	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
 		bucket := tx.Bucket(valueBucketKey)
 		if bucket == nil {
@@ -118,12 +103,12 @@ func (self *db) View(f func(*bolt.Bucket) error) (err error) {
 	return
 }
 
-func (self *db) Close() (err error) {
+func (self *DB) Close() (err error) {
 	err = self.bolt.Close()
 	return
 }
 
-func (self *db) concat(h1 uint64, h2 uint64) []byte {
+func (self *DB) concat(h1 uint64, h2 uint64) []byte {
 	return []byte{
 		byte(h1 >> 56), byte(h1 >> 48), byte(h1 >> 40), byte(h1 >> 32),
 		byte(h1 >> 24), byte(h1 >> 16), byte(h1 >> 8), byte(h1),
@@ -176,7 +161,7 @@ func levelEnd(level uint, key []byte) (result []byte) {
 	return
 }
 
-func (self *db) hash(valueBucket, hashBucket *bolt.Bucket, key []byte, level uint) (result []byte, start []byte, sources int, err error) {
+func (self *DB) hash(valueBucket, hashBucket *bolt.Bucket, key []byte, level uint) (result []byte, start []byte, sources int, err error) {
 	cutoff := time.Now().Add(-MaxTombstoneAge).UnixNano()
 	hash := murmur3.New128()
 	if val := Value(valueBucket.Get(key)); val != nil {
@@ -207,7 +192,7 @@ func (self *db) hash(valueBucket, hashBucket *bolt.Bucket, key []byte, level uin
 	return
 }
 
-func (self *db) getUint(bucket *bolt.Bucket, key []byte) (result uint) {
+func (self *DB) getUint(bucket *bolt.Bucket, key []byte) (result uint) {
 	k := bucket.Get(key)
 	if k == nil {
 		return 0
@@ -217,13 +202,13 @@ func (self *db) getUint(bucket *bolt.Bucket, key []byte) (result uint) {
 	return
 }
 
-func (self *db) putUint(bucket *bolt.Bucket, key []byte, i uint) (err error) {
+func (self *DB) putUint(bucket *bolt.Bucket, key []byte, i uint) (err error) {
 	b := make([]byte, binary.MaxVarintLen64)
 	b = b[:binary.PutUvarint(b, uint64(i))]
 	return bucket.Put(key, b)
 }
 
-func (self *db) updateHashes(valueBucket, merkleBucket *bolt.Bucket, key []byte) (err error) {
+func (self *DB) updateHashes(valueBucket, merkleBucket *bolt.Bucket, key []byte) (err error) {
 	var srcHashBucket *bolt.Bucket
 	var dstHashBucket *bolt.Bucket
 	var hash []byte
@@ -295,7 +280,7 @@ func (self Range) String() string {
 	return fmt.Sprintf("Range{%v-%v}", hex.EncodeToString(self.FromInc), hex.EncodeToString(self.ToExc))
 }
 
-func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOps uint64) (ops uint64, err error) {
+func (self *DB) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOps uint64) (ops uint64, err error) {
 	hashes, err := self.Hashes(prefix, level)
 	if err != nil {
 		return
@@ -362,14 +347,14 @@ func (self *db) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOp
 	return
 }
 
-func (self *db) SyncAll(o Synchronizable, r Range) (err error) {
+func (self *DB) SyncAll(o Synchronizable, r Range) (err error) {
 	var ops uint64
 	for ops, err = self.Sync(o, r, uint64(0xffffffffffffffff)); err == nil && ops > 0; ops, err = self.Sync(o, r, uint64(0xffffffffffffffff)) {
 	}
 	return
 }
 
-func (self *db) Sync(o Synchronizable, r Range, maxOps uint64) (ops uint64, err error) {
+func (self *DB) Sync(o Synchronizable, r Range, maxOps uint64) (ops uint64, err error) {
 	eq, err := self.Equal(o)
 	if err != nil {
 		return
@@ -380,7 +365,7 @@ func (self *db) Sync(o Synchronizable, r Range, maxOps uint64) (ops uint64, err 
 	return self.sync(o, 1, nil, r, maxOps)
 }
 
-func (self *db) Equal(o Synchronizable) (result bool, err error) {
+func (self *DB) Equal(o Synchronizable) (result bool, err error) {
 	h1, err := self.Hash()
 	if err != nil {
 		return
@@ -393,7 +378,15 @@ func (self *db) Equal(o Synchronizable) (result bool, err error) {
 	return
 }
 
-func (self *db) PP() string {
+func (self *DB) PPStrings() string {
+	m, err := self.ToSortedMapStrings()
+	if err != nil {
+		return err.Error()
+	}
+	return pretty.Sprintf("%# v", m)
+}
+
+func (self *DB) PP() string {
 	m, err := self.ToSortedMap()
 	if err != nil {
 		return err.Error()
@@ -401,7 +394,28 @@ func (self *db) PP() string {
 	return pretty.Sprintf("%# v", m)
 }
 
-func (self *db) ToSortedMap() (result [][2][]byte, err error) {
+func (self *DB) ToSortedMapStrings() (result [][2]string, err error) {
+	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
+		valueBucket := tx.Bucket(valueBucketKey)
+		if valueBucket == nil {
+			err = fmt.Errorf("Database has no value bucket?")
+			return
+		}
+		cursor := valueBucket.Cursor()
+		for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
+			result = append(result, [2]string{
+				string(k),
+				string(v[17:]),
+			})
+		}
+		return
+	}); err != nil {
+		return
+	}
+	return
+}
+
+func (self *DB) ToSortedMap() (result [][2][]byte, err error) {
 	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
 		valueBucket := tx.Bucket(valueBucketKey)
 		if valueBucket == nil {
@@ -422,7 +436,7 @@ func (self *db) ToSortedMap() (result [][2][]byte, err error) {
 	return
 }
 
-func (self *db) Hashes(key []byte, level uint) (result [256][]byte, err error) {
+func (self *DB) Hashes(key []byte, level uint) (result [256][]byte, err error) {
 	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
 		merkleBucket := tx.Bucket(merkleBucketKey)
 		if merkleBucket == nil {
@@ -449,7 +463,7 @@ func (self *db) Hashes(key []byte, level uint) (result [256][]byte, err error) {
 	return
 }
 
-func (self *db) Hash() (result []byte, err error) {
+func (self *DB) Hash() (result []byte, err error) {
 	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
 		merkleBucket := tx.Bucket(merkleBucketKey)
 		if merkleBucket == nil {
@@ -468,13 +482,13 @@ func (self *db) Hash() (result []byte, err error) {
 	return
 }
 
-func (self *db) PutString(key string, value string) (err error) {
+func (self *DB) PutString(key string, value string) (err error) {
 	val := make([]byte, 17+len(value))
 	copy(val[17:], value)
 	return self.Put([]byte(key), val)
 }
 
-func (self *db) GetString(key string) (result string, err error) {
+func (self *DB) GetString(key string) (result string, err error) {
 	res, err := self.Get([]byte(key))
 	if err != nil {
 		return
@@ -483,7 +497,7 @@ func (self *db) GetString(key string) (result string, err error) {
 	return
 }
 
-func (self *db) Get(key []byte) (result Value, err error) {
+func (self *DB) Get(key []byte) (result Value, err error) {
 	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
 		valueBucket := tx.Bucket(valueBucketKey)
 		if valueBucket == nil {
@@ -498,11 +512,11 @@ func (self *db) Get(key []byte) (result Value, err error) {
 	return
 }
 
-func (self *db) DeleteString(key string) (err error) {
+func (self *DB) DeleteString(key string) (err error) {
 	return self.Delete([]byte(key))
 }
 
-func (self *db) Delete(key []byte) (err error) {
+func (self *DB) Delete(key []byte) (err error) {
 	if err = self.bolt.Update(func(tx *bolt.Tx) (err error) {
 		valueBucket, err := tx.CreateBucketIfNotExists(valueBucketKey)
 		if err != nil {
@@ -524,7 +538,7 @@ func (self *db) Delete(key []byte) (err error) {
 	}
 	return
 }
-func (self *db) Put(key []byte, value Value) (err error) {
+func (self *DB) Put(key []byte, value Value) (err error) {
 	if len(value) < 17 {
 		err = fmt.Errorf("%v needs to be at least 17 bytes long to have a read timestamp (first 8 bytes), write timestamp (next 8 bytes) and flag byte", value)
 		return

@@ -46,7 +46,7 @@ func New(host string) (result *Client, err error) {
 	result = &Client{
 		ring: ring.New(),
 	}
-	if err = switchboard.Switch.Call(host, "Node.GetRing", nil, result.ring); err != nil {
+	if err = switchboard.Switch.Call(host, "Node.GetRing", struct{}{}, result.ring); err != nil {
 		return
 	}
 	return
@@ -55,7 +55,7 @@ func New(host string) (result *Client, err error) {
 func (self *Client) refresh() (err error) {
 	for {
 		peer := self.ring.Rand()
-		if err = switchboard.Switch.Call(peer.ConnectionString, "Node.GetRing", nil, self.ring); err == nil {
+		if err = switchboard.Switch.Call(peer.ConnectionString, "Node.GetRing", struct{}{}, self.ring); err == nil {
 			break
 		}
 		self.ring.RemovePeer(peer.Name)
@@ -89,7 +89,7 @@ func (self *Client) Transact(f func(*TX) error) (err error) {
 			Id: ring.RandomPos(4),
 		},
 		client:     self,
-		buffer:     map[string]string{},
+		buffer:     map[string][]byte{},
 		uwByKey:    map[string][][]byte{},
 		wroteByKey: map[string]int64{},
 	}

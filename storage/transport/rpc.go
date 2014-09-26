@@ -6,7 +6,7 @@ import (
 )
 
 type RPCServer struct {
-	Storage storage.DB
+	Storage *storage.DB
 }
 
 func (self *RPCServer) Hash(a struct{}, result *[]byte) (err error) {

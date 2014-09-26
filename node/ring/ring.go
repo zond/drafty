@@ -60,6 +60,15 @@ func New() *Ring {
 	}
 }
 
+func (self *Ring) Each(f func(*Peer) error) (err error) {
+	for _, peer := range self.peers {
+		if err = f(peer); err != nil {
+			return
+		}
+	}
+	return
+}
+
 func (self *Ring) Clone() (result *Ring) {
 	result = &Ring{
 		peers:      make(Peers, len(self.peers)),

@@ -6,13 +6,13 @@ import (
 )
 
 type Transactor struct {
-	storage storage.DB
+	storage *storage.DB
 	txById  map[string]*common.TX
 	urByKey map[string][]*common.TX
 	uwByKey map[string][]*common.TX
 }
 
-func New(storage storage.DB) (result *Transactor) {
+func New(storage *storage.DB) (result *Transactor) {
 	return &Transactor{
 		storage: storage,
 		txById:  map[string]*common.TX{},
