@@ -76,6 +76,10 @@ func (self Value) Deleted() bool {
 	return self[16]&deleted == deleted
 }
 
+func (self Value) Bytes() []byte {
+	return self[17:]
+}
+
 type db struct {
 	bolt *bolt.DB
 }

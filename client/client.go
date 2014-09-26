@@ -13,6 +13,31 @@ const (
 	rpcInitialBackoff = time.Millisecond * 10
 )
 
+type TX struct {
+	*common.TX
+	client     *Client
+	buffer     map[string][]byte
+	uwByKey    map[string][][]byte
+	wroteByKey map[string]int64
+}
+
+func (self *TX) Get(key []byte) (result []byte, err error) {
+	skey := string(key)
+	result, found := self.buffer[skey]
+	if found {
+		return
+	}
+	resp := &common.TXGetResp{}
+	if err = self.client.callSuccessorOf(key, "TX.Get", &common.TXGetReq{TX: self.TX, Key: key}, resp); err != nil {
+		return
+	}
+	self.buffer[skey] = resp.Value
+	self.wroteByKey[skey] = resp.Wrote
+	self.uwByKey[skey] = resp.UW
+	result = resp.Value
+	return
+}
+
 type Client struct {
 	ring *ring.Ring
 }
@@ -58,11 +83,17 @@ func (self *Client) callSuccessorOf(id []byte, service string, input interface{}
 	return
 }
 
-func (self *Client) Transact(func(*common.TX) error) (err error) {
-	tx := &common.TX{
-		Id: ring.RandomPos(4),
+func (self *Client) Transact(f func(*TX) error) (err error) {
+	tx := &TX{
+		TX: &common.TX{
+			Id: ring.RandomPos(4),
+		},
+		client:     self,
+		buffer:     map[string]string{},
+		uwByKey:    map[string][][]byte{},
+		wroteByKey: map[string]int64{},
 	}
-	if err = self.callSuccessorOf(tx.Id, "TX.Initialize", tx, nil); err != nil {
+	if err = f(tx); err != nil {
 		return
 	}
 	return

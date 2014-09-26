@@ -12,12 +12,20 @@ const (
 	TXRunning TXState = iota
 )
 
-type TimeBound struct {
+type TXGetReq struct {
+	TX  *TX
+	Key []byte
+}
+
+type TXGetResp struct {
+	Value []byte
+	Wrote int64
+	UW    [][]byte
 }
 
 type TX struct {
 	Id    []byte
-	Lower time.Time
-	Upper time.Time
+	Lower *time.Time
+	Upper *time.Time
 	State TXState
 }

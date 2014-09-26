@@ -9,7 +9,11 @@ type RPCServer struct {
 	Transactor *transactor.Transactor
 }
 
-func (self *RPCServer) Initialize(tx *common.TX, a *struct{}) (err error) {
-	self.Transactor.UpdateTX(tx)
+func (self *RPCServer) Get(req *common.TXGetReq, resp *common.TXGetResp) (err error) {
+	r, err := self.Transactor.Get(req.TX, req.Key)
+	if err != nil {
+		return
+	}
+	*resp = *r
 	return
 }
