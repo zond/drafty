@@ -2,8 +2,8 @@ package node
 
 import (
 	"github.com/zond/drafty/log"
-	"github.com/zond/drafty/node/commands"
 	"github.com/zond/drafty/node/ring"
+	"github.com/zond/drafty/raft/commands"
 	"github.com/zond/drafty/switchboard"
 )
 

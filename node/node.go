@@ -13,13 +13,15 @@ import (
 
 	"github.com/boltdb/bolt"
 	"github.com/goraft/raft"
+	"github.com/zond/drafty/common"
 	"github.com/zond/drafty/log"
-	"github.com/zond/drafty/node/commands"
 	"github.com/zond/drafty/node/ring"
+	"github.com/zond/drafty/raft/commands"
 	raftTransport "github.com/zond/drafty/raft/transport"
 	"github.com/zond/drafty/storage"
 	storageTransport "github.com/zond/drafty/storage/transport"
 	"github.com/zond/drafty/switchboard"
+	"github.com/zond/drafty/transactor"
 )
 
 func init() {
@@ -33,16 +35,13 @@ func init() {
 var posKey = []byte("pos")
 var metadataBucketKey = []byte("metadata")
 
-const (
-	nBackups = 2
-)
-
 type Node struct {
 	pos            []byte
 	server         *switchboard.Server
 	dir            string
 	raft           raft.Server
 	ring           *ring.Ring
+	transactor     *transactor.Transactor
 	stopped        int32
 	stops          uint64
 	stopLock       sync.Mutex
@@ -54,9 +53,10 @@ type Node struct {
 
 func New(addr string, dir string) (result *Node, err error) {
 	result = &Node{
-		server: switchboard.NewServer(addr),
-		dir:    dir,
-		ring:   ring.New(),
+		server:     switchboard.NewServer(addr),
+		dir:        dir,
+		ring:       ring.New(),
+		transactor: transactor.New(),
 	}
 	result.stopCond = sync.NewCond(&result.stopLock)
 	return
@@ -160,7 +160,7 @@ func (self *Node) syncWith(i int) (acted bool, err error) {
 			FromInc: self.ring.Predecessors(self.pos, 1)[0].Pos,
 			ToExc:   self.pos,
 		}
-		peer := self.ring.Successors(self.pos, nBackups)[i]
+		peer := self.ring.Successors(self.pos, common.NBackups)[i]
 		ops, err := self.storage.Sync(storageTransport.RPCTransport(peer.ConnectionString), r, 1)
 		if err != nil {
 			return
@@ -176,7 +176,7 @@ func (self *Node) syncWith(i int) (acted bool, err error) {
 
 func (self *Node) synchronize() {
 	stops := atomic.LoadUint64(&self.stops)
-	for i := 0; i < nBackups; i++ {
+	for i := 0; i < common.NBackups; i++ {
 		for acted, err := self.syncWith(i); err == nil && acted && atomic.LoadUint64(&self.stops) == stops; acted, err = self.syncWith(i) {
 		}
 	}
@@ -184,21 +184,6 @@ func (self *Node) synchronize() {
 
 func (self *Node) String() string {
 	return self.AsPeer().String()
-}
-
-func (self *Node) randomPos() (result []byte) {
-	i := rand.Int63()
-	result = []byte{
-		byte(i >> 7),
-		byte(i >> 6),
-		byte(i >> 5),
-		byte(i >> 4),
-		byte(i >> 3),
-		byte(i >> 2),
-		byte(i >> 1),
-		byte(i >> 0),
-	}
-	return
 }
 
 func (self *Node) AsPeer() (result *ring.Peer) {
@@ -209,7 +194,7 @@ func (self *Node) AsPeer() (result *ring.Peer) {
 	}
 }
 
-func (self *Node) selectName() (err error) {
+func (self *Node) selectPos() (err error) {
 	if err = self.metadata.Update(func(tx *bolt.Tx) (err error) {
 		bucket, err := tx.CreateBucketIfNotExists(metadataBucketKey)
 		if err != nil {
@@ -217,7 +202,7 @@ func (self *Node) selectName() (err error) {
 		}
 		self.pos = bucket.Get(posKey)
 		if self.pos == nil {
-			self.pos = self.randomPos()
+			self.pos = ring.RandomPos(1)
 			if err = bucket.Put(posKey, self.pos); err != nil {
 				return
 			}
@@ -270,6 +255,9 @@ func (self *Node) startServing() (err error) {
 	self.server.Serve("Node", &RPCServer{
 		node: self,
 	})
+	self.server.Serve("TX", &transactorTransport.RPCServer{
+		Transactor: self.transactor,
+	})
 	if err = self.raft.Start(); err != nil {
 		return
 	}
@@ -316,7 +304,7 @@ func (self *Node) Start(join string) (err error) {
 	if err = self.setupPersistence(); err != nil {
 		return
 	}
-	if err = self.selectName(); err != nil {
+	if err = self.selectPos(); err != nil {
 		return
 	}
 	if err = self.setupRaft(); err != nil {

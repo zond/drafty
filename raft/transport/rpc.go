@@ -8,7 +8,7 @@ import (
 
 	"github.com/goraft/raft"
 	"github.com/zond/drafty/log"
-	"github.com/zond/drafty/node/commands"
+	"github.com/zond/drafty/raft/commands"
 	"github.com/zond/drafty/switchboard"
 )
 

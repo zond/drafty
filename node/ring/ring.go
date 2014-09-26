@@ -5,8 +5,25 @@ import (
 	"encoding/gob"
 	"encoding/hex"
 	"fmt"
+	"math/rand"
 	"sort"
 )
+
+func RandomPos(octets int) (result []byte) {
+	result = make([]byte, 8*octets)
+	for n := 0; n < octets; n++ {
+		i := rand.Int63()
+		result[0+n*8] = byte(i >> 7)
+		result[1+n*8] = byte(i >> 6)
+		result[2+n*8] = byte(i >> 5)
+		result[3+n*8] = byte(i >> 4)
+		result[4+n*8] = byte(i >> 3)
+		result[5+n*8] = byte(i >> 2)
+		result[6+n*8] = byte(i >> 1)
+		result[7+n*8] = byte(i >> 0)
+	}
+	return
+}
 
 type Peer struct {
 	Name             string
@@ -90,6 +107,10 @@ func (self *Ring) AddPeer(peer *Peer) {
 func (self *Ring) ByName(name string) (result *Peer, found bool) {
 	result, found = self.peerByName[name]
 	return
+}
+
+func (self *Ring) Rand() (result *Peer) {
+	return self.peers[rand.Int()%len(self.peers)]
 }
 
 func (self *Ring) RemovePeer(name string) {
