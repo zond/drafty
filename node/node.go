@@ -188,22 +188,16 @@ func (self *Node) offer(data [][2][]byte) (err error) {
 		key := kv[0]
 		value := storage.Value(kv[1])
 		vRTS := value.ReadTimestamp()
-		vWTS := value.WriteTimestamp()
 		peer := self.ring.Successors(key, 1)[0]
 		var current []byte
 		if err = switchboard.Switch.Call(peer.ConnectionString, "Synchronizable.Get", key, &current); err != nil {
 			return
 		}
 		curRTS := int64(-1)
-		curWTS := int64(-1)
 		if current != nil {
 			curRTS = storage.Value(current).ReadTimestamp()
-			curWTS = storage.Value(current).WriteTimestamp()
 		}
-		if curRTS < vRTS && curWTS > vWTS {
-			log.Fatalf("%v has greater read timestamp but less write timestamp than %v", value, current)
-		}
-		if vRTS > curRTS || vWTS > curWTS {
+		if vRTS > curRTS {
 			if err = switchboard.Switch.Call(peer.ConnectionString, "Synchronizable.Put", kv, nil); err != nil {
 				return
 			}

@@ -10,7 +10,6 @@ import (
 	"github.com/boltdb/bolt"
 	"github.com/kr/pretty"
 	"github.com/spaolacci/murmur3"
-	"github.com/zond/drafty/log"
 )
 
 var valueBucketKey = []byte("values")
@@ -166,7 +165,7 @@ func (self *DB) hash(valueBucket, hashBucket *bolt.Bucket, key []byte, level uin
 	hash := murmur3.New128()
 	if val := Value(valueBucket.Get(key)); val != nil {
 		if val.Deleted() {
-			if val.WriteTimestamp() < cutoff && val.ReadTimestamp() < cutoff {
+			if val.ReadTimestamp() < cutoff {
 				if err = valueBucket.Delete(key); err != nil {
 					return
 				}
@@ -306,22 +305,15 @@ func (self *DB) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOp
 					}
 					if bytes.Compare(value, oValue) != 0 {
 						vRTS := int64(-1)
-						vWTS := int64(-1)
 						oRTS := int64(-1)
-						oWTS := int64(-1)
 						if value != nil {
 							vRTS = value.ReadTimestamp()
-							vWTS = value.WriteTimestamp()
 						}
 						if oValue != nil {
 							oRTS = oValue.ReadTimestamp()
-							oWTS = oValue.WriteTimestamp()
 						}
 						dst, target := o, value
-						if vRTS < oRTS && vWTS > oWTS {
-							log.Fatalf("%v has greater read timestamp but less write timestamp than %v", oValue, value)
-						}
-						if vRTS < oRTS || vWTS < oWTS {
+						if vRTS < oRTS {
 							dst, target = self, oValue
 						}
 						if err = dst.Put(newPrefix, target); err != nil {
