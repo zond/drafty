@@ -100,6 +100,10 @@ func (self *Node) Recovery(b []byte) (err error) {
 	return
 }
 
+func (self *Node) Addr() string {
+	return self.server.Addr()
+}
+
 func (self *Node) Stop() (err error) {
 	self.stopLock.Lock()
 	defer self.stopLock.Unlock()
@@ -114,7 +118,7 @@ func (self *Node) Continue() (err error) {
 	atomic.StoreInt32(&self.stopped, 0)
 	self.stopCond.Broadcast()
 	go self.synchronize()
-	go self.clean()
+	//go self.clean()
 	log.Debugf("%v continued", self)
 	return
 }

@@ -31,6 +31,10 @@ type Peer struct {
 	ConnectionString string
 }
 
+func (self *Peer) Equal(o *Peer) bool {
+	return self.Name == o.Name && bytes.Compare(self.Pos, o.Pos) == 0 && self.ConnectionString == o.ConnectionString
+}
+
 func (self *Peer) String() string {
 	return fmt.Sprintf("Peer{Addr:%v, Name:%v, Pos:%v}", self.ConnectionString, self.Name, hex.EncodeToString(self.Pos))
 }
@@ -58,6 +62,26 @@ func New() *Ring {
 	return &Ring{
 		peerByName: map[string]*Peer{},
 	}
+}
+
+func (self *Ring) String() string {
+	return fmt.Sprint(self.peers)
+}
+
+func (self *Ring) Equal(o *Ring) bool {
+	if len(self.peers) != len(o.peers) {
+		return false
+	}
+	for index, peer := range self.peers {
+		if !peer.Equal(o.peers[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (self *Ring) Len() int {
+	return len(self.peers)
 }
 
 func (self *Ring) Each(f func(*Peer) error) (err error) {

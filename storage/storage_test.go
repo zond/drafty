@@ -16,13 +16,12 @@ func init() {
 	rand.Seed(time.Now().Unix())
 }
 
-func withDB(t testing.TB, f func(DB)) {
-	fname := fmt.Sprintf("test-%v.db", rand.Int())
+func withDB(t testing.TB, f func(*DB)) {
+	fname := fmt.Sprintf("test-%v.db", rand.Int63())
 	db, err := New(fname)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
-	f(db)
 	defer func() {
 		if err := db.Close(); err != nil {
 			t.Errorf("%v", err)
@@ -31,7 +30,7 @@ func withDB(t testing.TB, f func(DB)) {
 			t.Fatalf("%v", err)
 		}
 	}()
-
+	f(db)
 }
 
 func TestLevels(t *testing.T) {
@@ -55,8 +54,8 @@ func TestLevels(t *testing.T) {
 
 func TestPartialSyncAll(t *testing.T) {
 	for i := 0; i < 10; i++ {
-		withDB(t, func(db1 DB) {
-			withDB(t, func(db2 DB) {
+		withDB(t, func(db1 *DB) {
+			withDB(t, func(db2 *DB) {
 				for i := 0; i < 1000; i++ {
 					if err := db1.Put(randomKey(4), randomValue(4)); err != nil {
 						return
@@ -156,8 +155,8 @@ func randomValue(l int) (result Value) {
 }
 
 func TestSync(t *testing.T) {
-	withDB(t, func(db1 DB) {
-		withDB(t, func(db2 DB) {
+	withDB(t, func(db1 *DB) {
+		withDB(t, func(db2 *DB) {
 			if err := db1.PutString("a", "a"); err != nil {
 				t.Fatalf("%v", err)
 			}
@@ -187,8 +186,8 @@ func TestSync(t *testing.T) {
 }
 
 func TestSyncAll(t *testing.T) {
-	withDB(t, func(db1 DB) {
-		withDB(t, func(db2 DB) {
+	withDB(t, func(db1 *DB) {
+		withDB(t, func(db2 *DB) {
 			for i := 0; i < 1000; i++ {
 				if err := db1.Put(randomKey(4), randomValue(4)); err != nil {
 					t.Fatalf("%v", err)
@@ -227,7 +226,7 @@ func TestSyncAll(t *testing.T) {
 }
 
 func BenchmarkPut(b *testing.B) {
-	withDB(b, func(db DB) {
+	withDB(b, func(db *DB) {
 		b.StopTimer()
 		var keys [][]byte
 		var values [][]byte
@@ -255,8 +254,8 @@ func TestTopHash(t *testing.T) {
 		}
 		values = append(values, randomValue(10))
 	}
-	withDB(t, func(db1 DB) {
-		withDB(t, func(db2 DB) {
+	withDB(t, func(db1 *DB) {
+		withDB(t, func(db2 *DB) {
 			for _, i := range rand.Perm(len(keys)) {
 				if err := db1.Put(keys[i], values[i]); err != nil {
 					t.Fatalf("%v", err)
