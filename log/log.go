@@ -3,7 +3,6 @@ package log
 import (
 	"fmt"
 	goLog "log"
-	"time"
 )
 
 var Level = 0
@@ -17,7 +16,7 @@ const (
 )
 
 func log(f func(string, ...interface{}), prefix string, format string, args ...interface{}) {
-	format = fmt.Sprintf("%v\t%v\t%v", prefix, time.Now(), format)
+	format = fmt.Sprintf("%v\t%v", prefix, format)
 	f(format, args...)
 }
 
