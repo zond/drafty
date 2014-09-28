@@ -8,6 +8,7 @@ import (
 
 	"github.com/goraft/raft"
 	"github.com/zond/drafty/log"
+	"github.com/zond/drafty/node/ring"
 	"github.com/zond/drafty/raft/commands"
 	"github.com/zond/drafty/switchboard"
 )
@@ -20,8 +21,13 @@ type decoder interface {
 	Decode(io.Reader) (int, error)
 }
 
+type PeerAdder interface {
+	AddPeer(*ring.Peer) *ring.Ring
+}
+
 type RPCServer struct {
-	Raft raft.Server
+	Raft      raft.Server
+	PeerAdder PeerAdder
 }
 
 func (self *RPCServer) setBytes(item encoder, resp *[]byte) (err error) {
@@ -72,31 +78,51 @@ func (self *RPCServer) SnapshotRecoveryRequest(req []byte, resp *[]byte) (err er
 	return self.setBytes(response, resp)
 }
 
+type JoinRequest struct {
+	RaftJoinCommand *raft.DefaultJoinCommand
+	Pos             []byte
+}
+
 type JoinResponse struct {
 	Name string
 }
 
-func (self *RPCServer) Join(req *raft.DefaultJoinCommand, result *JoinResponse) (err error) {
+func (self *RPCServer) Join(req *JoinRequest, result *JoinResponse) (err error) {
 	if self.Raft.Name() != self.Raft.Leader() {
 		return switchboard.Switch.Call(self.Raft.Peers()[self.Raft.Leader()].ConnectionString, "Raft.Join", req, result)
 	}
-	if _, err = self.Raft.Do(req); err != nil {
-		log.Warnf("Unable to add new node %v: %v", req.Name, err)
+	if _, err = self.Raft.Do(req.RaftJoinCommand); err != nil {
+		log.Warnf("Unable to add new node %v: %v", req.RaftJoinCommand.Name, err)
 		return
 	}
+	if _, err = self.Raft.Do(&commands.StopCommand{}); err != nil {
+		log.Warnf("Unable to stop cluster after adding new node %v: %v", req.RaftJoinCommand.Name, err)
+		return
+	}
+	if _, err = self.Raft.Do(&commands.ContCommand{
+		Ring: self.PeerAdder.AddPeer(&ring.Peer{
+			Name:             req.RaftJoinCommand.Name,
+			ConnectionString: req.RaftJoinCommand.ConnectionString,
+			Pos:              req.Pos,
+		}),
+	}); err != nil {
+		log.Warnf("Unable to restart cluster after adding new node %v: %v", req.RaftJoinCommand.Name, err)
+		return
+	}
+	log.Infof("%v accepted %v", self.Raft.Name(), req.RaftJoinCommand.Name)
 	*result = JoinResponse{
 		Name: self.Raft.Name(),
 	}
 	return
 }
 
-type Stopper interface {
-	WhileStopped(func() error) error
+type PeerRemover interface {
+	RemovePeer(string) *ring.Ring
 }
 
 type RPCTransport struct {
-	Raft    raft.Server
-	Stopper Stopper
+	Raft        raft.Server
+	PeerRemover PeerRemover
 }
 
 func (self *RPCTransport) callEncoded(peer *raft.Peer, service string, req encoder, resp decoder) (err error) {
@@ -116,15 +142,14 @@ func (self *RPCTransport) callEncoded(peer *raft.Peer, service string, req encod
 				return
 			}
 			log.Infof("%v kicked %v from raft", self.Raft.Name(), peer.Name)
-			if err = self.Stopper.WhileStopped(func() (err error) {
-				if _, err = self.Raft.Do(&commands.RemovePeerCommand{
-					Name: peer.Name,
-				}); err != nil {
-					log.Warnf("Unable to kick unreachable node %v: %v", peer.Name)
-				}
-				log.Infof("%v kicked %v from ring", self.Raft.Name(), peer.Name)
+			if _, err = self.Raft.Do(&commands.StopCommand{}); err != nil {
+				log.Warnf("Unable to stop cluster after kicking unreachable node %v: %v", peer.Name, err)
 				return
+			}
+			if _, err = self.Raft.Do(&commands.ContCommand{
+				Ring: self.PeerRemover.RemovePeer(peer.Name),
 			}); err != nil {
+				log.Warnf("Unable to restart cluster after kicking unreachable node %v: %v", peer.Name, err)
 				return
 			}
 		}

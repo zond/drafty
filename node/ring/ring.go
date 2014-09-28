@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"encoding/gob"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net/rpc"
 	"sort"
+
+	"github.com/zond/drafty/switchboard"
 )
 
 func RandomPos(octets int) (result []byte) {
@@ -31,6 +35,14 @@ type Peer struct {
 	ConnectionString string
 }
 
+func (self *Peer) Call(method string, input interface{}, output interface{}) error {
+	return switchboard.Switch.Call(self.ConnectionString, method, input, output)
+}
+
+func (self *Peer) Go(method string, args, reply interface{}, done chan *rpc.Call) (call *rpc.Call) {
+	return switchboard.Switch.Go(self.ConnectionString, method, args, reply, done)
+}
+
 func (self *Peer) Equal(o *Peer) bool {
 	return self.Name == o.Name && bytes.Compare(self.Pos, o.Pos) == 0 && self.ConnectionString == o.ConnectionString
 }
@@ -51,6 +63,15 @@ func (self Peers) Less(i, j int) bool {
 
 func (self Peers) Swap(i, j int) {
 	self[i], self[j] = self[j], self[i]
+}
+
+func (self Peers) ContainsPos(pos []byte) bool {
+	for _, peer := range self {
+		if bytes.Compare(peer.Pos, pos) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 type Ring struct {
@@ -105,14 +126,35 @@ func (self *Ring) Clone() (result *Ring) {
 	return
 }
 
-type gobRing struct {
+type pubRing struct {
 	Peers      Peers
 	PeerByName map[string]*Peer
 }
 
+func (self *Ring) MarshalText() (b []byte, err error) {
+	buf := &bytes.Buffer{}
+	if err = json.NewEncoder(buf).Encode(pubRing{
+		Peers:      self.peers,
+		PeerByName: self.peerByName,
+	}); err != nil {
+		return
+	}
+	b = buf.Bytes()
+	return
+}
+
+func (self *Ring) UnmarshalText(b []byte) (err error) {
+	g := &pubRing{}
+	if err = json.NewDecoder(bytes.NewBuffer(b)).Decode(g); err != nil {
+		return
+	}
+	self.peers, self.peerByName = g.Peers, g.PeerByName
+	return
+}
+
 func (self *Ring) MarshalBinary() (b []byte, err error) {
 	buf := &bytes.Buffer{}
-	if err = gob.NewEncoder(buf).Encode(gobRing{
+	if err = gob.NewEncoder(buf).Encode(pubRing{
 		Peers:      self.peers,
 		PeerByName: self.peerByName,
 	}); err != nil {
@@ -123,7 +165,7 @@ func (self *Ring) MarshalBinary() (b []byte, err error) {
 }
 
 func (self *Ring) UnmarshalBinary(b []byte) (err error) {
-	g := &gobRing{}
+	g := &pubRing{}
 	if err = gob.NewDecoder(bytes.NewBuffer(b)).Decode(g); err != nil {
 		return
 	}

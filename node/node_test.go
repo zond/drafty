@@ -1,12 +1,16 @@
 package node
 
 import (
+	"bytes"
+	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"os"
+	"sort"
 	"testing"
 	"time"
 
+	"github.com/zond/drafty/common"
 	"github.com/zond/drafty/log"
 	"github.com/zond/drafty/node/ring"
 )
@@ -86,7 +90,7 @@ func assertWithin(t *testing.T, d time.Duration, f func(*failer)) {
 }
 
 func assertRing(t *testing.T, n *Node, r *ring.Ring) {
-	assertWithin(t, time.Second*10, func(f *failer) {
+	assertWithin(t, time.Second*2, func(f *failer) {
 		n.WhileRunning(func() (err error) {
 			if !n.ring.Equal(r) {
 				f.Fatalf("Wrong ring, wanted %v to have %v but it has %v", n, r, n.ring)
@@ -96,35 +100,51 @@ func assertRing(t *testing.T, n *Node, r *ring.Ring) {
 	})
 }
 
-func withCluster(t *testing.T, f func(*ring.Ring, []*Node), preps ...func(*Node)) {
+type nodes []*Node
+
+func (self nodes) Len() int {
+	return len(self)
+}
+
+func (self nodes) Less(i, j int) bool {
+	return bytes.Compare(self[i].pos, self[j].pos) < 0
+}
+
+func (self nodes) Swap(i, j int) {
+	self[i], self[j] = self[j], self[i]
+}
+
+func withCluster(t *testing.T, f func(*ring.Ring, []*Node), prep func(*Node, int)) {
 	withNode(t, func(n1 *Node) {
 		withNode(t, func(n2 *Node) {
 			withNode(t, func(n3 *Node) {
 				withNode(t, func(n4 *Node) {
 					n1.Start("")
-					if len(preps) > 0 {
-						preps[0](n1)
+					if prep != nil {
+						prep(n1, 0)
 					}
 					n2.Start(n1.Addr())
-					if len(preps) > 1 {
-						preps[1](n2)
+					if prep != nil {
+						prep(n2, 1)
 					}
 					n3.Start(n1.Addr())
-					if len(preps) > 2 {
-						preps[2](n3)
+					if prep != nil {
+						prep(n3, 2)
 					}
 					n4.Start(n1.Addr())
-					if len(preps) > 4 {
-						preps[3](n4)
+					if prep != nil {
+						prep(n4, 3)
 					}
 					r := ring.New()
 					r.AddPeer(n1.AsPeer())
 					r.AddPeer(n2.AsPeer())
 					r.AddPeer(n3.AsPeer())
 					r.AddPeer(n4.AsPeer())
-					f(r, []*Node{
+					n := nodes{
 						n1, n2, n3, n4,
-					})
+					}
+					sort.Sort(n)
+					f(r, n)
 				})
 			})
 		})
@@ -138,14 +158,51 @@ func TestJoining(t *testing.T) {
 		assertRing(t, n[1], r)
 		assertRing(t, n[2], r)
 		assertRing(t, n[3], r)
-	})
+	}, nil)
 }
 
-func TestSync(t *testing.T) {
-	log.Level = 10
+func TestSyncAndClean(t *testing.T) {
+	//log.Level = 10
+	val := make([]byte, 18)
+	val[17] = 1
+	keys := [][][]byte{}
+	for n := 0; n < 3; n++ {
+		nodeKeys := [][]byte{}
+		for i := 0; i < 100; i++ {
+			nodeKeys = append(nodeKeys, ring.RandomPos(2))
+		}
+		keys = append(keys, nodeKeys)
+	}
 	withCluster(t, func(r *ring.Ring, n []*Node) {
-		fmt.Println(n[0].storage.PP(), n[1].storage.PP(), n[2].storage.PP(), n[3].storage.PP())
-	}, func(n1 *Node) {
-		n1.storage.PutString("a", "a")
+		assertWithin(t, time.Second*20, func(f *failer) {
+			for _, keyset := range keys {
+				for _, key := range keyset {
+					successors := r.Successors(key, common.NBackups+1)
+					for _, node := range n {
+						v, err := node.storage.Get(key)
+						if err != nil {
+							f.Fatalf("Unable to load %v from %v: %v", key, node, err)
+						}
+						if successors.ContainsPos(node.pos) {
+							if bytes.Compare(val, v) != 0 {
+								f.Errorf("Wrong value for %v %v in %v: %v", r, hex.EncodeToString(key), hex.EncodeToString(node.pos), v)
+							}
+						} else {
+							if v != nil {
+								f.Errorf("Wrong value for %v %v in %v: %v", r, hex.EncodeToString(key), hex.EncodeToString(node.pos), v)
+							}
+						}
+					}
+				}
+			}
+		})
+	}, func(n *Node, i int) {
+		if i < 3 {
+			for _, key := range keys[i] {
+				if err := n.storage.Put(key, val); err != nil {
+					t.Fatalf("%v", err)
+				}
+			}
+		}
 	})
 }

@@ -166,7 +166,7 @@ func TestSync(t *testing.T) {
 			if err := db1.PutString("c", "c"); err != nil {
 				t.Fatalf("%v", err)
 			}
-			if ops, err := db1.Sync(db2, Range{}, 1); err != nil || ops != 1 {
+			if ops, err := db1.Sync(db2, Range{}, 1, ""); err != nil || ops != 1 {
 				t.Fatalf("%v", err)
 			}
 			m2, err := db2.ToSortedMap()

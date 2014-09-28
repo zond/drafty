@@ -171,6 +171,9 @@ func (self *DB) hash(valueBucket, hashBucket *bolt.Bucket, key []byte, level uin
 				}
 			}
 		} else {
+			if _, err = hash.Write(key); err != nil {
+				return
+			}
 			if _, err = hash.Write(val); err != nil {
 				return
 			}
@@ -236,6 +239,17 @@ func (self *DB) updateHashes(valueBucket, merkleBucket *bolt.Bucket, key []byte)
 	return
 }
 
+type Ranges []Range
+
+func (self Ranges) Within(k []byte) bool {
+	for _, r := range self {
+		if r.Within(k) {
+			return true
+		}
+	}
+	return false
+}
+
 type Range struct {
 	FromInc []byte
 	ToExc   []byte
@@ -279,7 +293,7 @@ func (self Range) String() string {
 	return fmt.Sprintf("Range{%v-%v}", hex.EncodeToString(self.FromInc), hex.EncodeToString(self.ToExc))
 }
 
-func (self *DB) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOps uint64) (ops uint64, err error) {
+func (self *DB) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOps uint64, logs string) (ops uint64, err error) {
 	hashes, err := self.Hashes(prefix, level)
 	if err != nil {
 		return
@@ -326,7 +340,7 @@ func (self *DB) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOp
 					}
 				}
 				var newOps uint64
-				if newOps, err = self.sync(o, level+1, newPrefix, r, maxOps-ops); err != nil {
+				if newOps, err = self.sync(o, level+1, newPrefix, r, maxOps-ops, logs); err != nil {
 					return
 				}
 				ops += newOps
@@ -341,12 +355,12 @@ func (self *DB) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOp
 
 func (self *DB) SyncAll(o Synchronizable, r Range) (err error) {
 	var ops uint64
-	for ops, err = self.Sync(o, r, uint64(0xffffffffffffffff)); err == nil && ops > 0; ops, err = self.Sync(o, r, uint64(0xffffffffffffffff)) {
+	for ops, err = self.Sync(o, r, uint64(0xffffffffffffffff), ""); err == nil && ops > 0; ops, err = self.Sync(o, r, uint64(0xffffffffffffffff), "") {
 	}
 	return
 }
 
-func (self *DB) Sync(o Synchronizable, r Range, maxOps uint64) (ops uint64, err error) {
+func (self *DB) Sync(o Synchronizable, r Range, maxOps uint64, logs string) (ops uint64, err error) {
 	eq, err := self.Equal(o)
 	if err != nil {
 		return
@@ -354,7 +368,7 @@ func (self *DB) Sync(o Synchronizable, r Range, maxOps uint64) (ops uint64, err 
 	if eq {
 		return
 	}
-	return self.sync(o, 1, nil, r, maxOps)
+	return self.sync(o, 1, nil, r, maxOps, logs)
 }
 
 func (self *DB) Equal(o Synchronizable) (result bool, err error) {
@@ -483,6 +497,9 @@ func (self *DB) PutString(key string, value string) (err error) {
 func (self *DB) GetString(key string) (result string, err error) {
 	res, err := self.Get([]byte(key))
 	if err != nil {
+		return
+	}
+	if res == nil {
 		return
 	}
 	result = string(res[17:])

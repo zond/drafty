@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestSuccessors(t *testing.T) {
+func TestSuccessorsAndPredecessors(t *testing.T) {
 	r := New()
 	p0 := &Peer{
 		Name: "a",

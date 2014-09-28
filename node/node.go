@@ -33,8 +33,6 @@ func init() {
 	rand.Seed(time.Now().UnixNano())
 	raft.RegisterCommand(&commands.StopCommand{})
 	raft.RegisterCommand(&commands.ContCommand{})
-	raft.RegisterCommand(&commands.AddPeerCommand{})
-	raft.RegisterCommand(&commands.RemovePeerCommand{})
 }
 
 var posKey = []byte("pos")
@@ -114,12 +112,12 @@ func (self *Node) Stop() (err error) {
 	return
 }
 
-func (self *Node) Continue() (err error) {
+func (self *Node) Continue(r *ring.Ring) (err error) {
+	self.ring = r
 	atomic.StoreInt32(&self.stopped, 0)
 	self.stopCond.Broadcast()
-	go self.synchronize()
-	//go self.clean()
-	log.Debugf("%v continued", self)
+	go self.cleanAndSync()
+	log.Debugf("%v continued with ring %v", self, self.ring)
 	return
 }
 
@@ -153,24 +151,120 @@ func (self *Node) WhileRunning(f func() error) error {
 	return f()
 }
 
-func (self *Node) AddPeer(peer *ring.Peer) (err error) {
+func (self *Node) AddPeer(peer *ring.Peer) *ring.Ring {
 	self.ring.AddPeer(peer)
-	return
+	return self.ring
 }
 
-func (self *Node) RemovePeer(name string) (err error) {
+func (self *Node) RemovePeer(name string) *ring.Ring {
 	self.ring.RemovePeer(name)
+	return self.ring
+}
+
+func (self *Node) offer(data [][2][]byte) (err error) {
+	for _, kv := range data {
+		key := kv[0]
+		value := storage.Value(kv[1])
+		vRTS := value.ReadTimestamp()
+		for _, peer := range self.ring.Successors(key, common.NBackups+1) {
+			var current []byte
+			if err = peer.Call("Synchronizable.Get", key, &current); err != nil {
+				return
+			}
+			curRTS := int64(-1)
+			if current != nil {
+				curRTS = storage.Value(current).ReadTimestamp()
+			}
+			if vRTS > curRTS {
+				if err = peer.Call("Synchronizable.Put", kv, nil); err != nil {
+					return
+				}
+			}
+		}
+		if err = self.storage.Delete(key); err != nil {
+			return
+		}
+	}
 	return
 }
 
-func (self *Node) syncOnceWith(i int) (acted bool, err error) {
+func (self *Node) cleanOnce(stops uint64) (acted bool, err error) {
 	if err = self.WhileRunning(func() (err error) {
+		if atomic.LoadUint64(&self.stops) != stops {
+			return
+		}
+		toOffer := [][2][]byte{}
+		var preds ring.Peers
+		preds = self.ring.Predecessors(self.pos, common.NBackups+1)
+		ranges := storage.Ranges{}
+		for i := 0; i < len(preds)-1; i++ {
+			ranges = append(ranges, storage.Range{
+				FromInc: preds[i+1].Pos,
+				ToExc:   preds[i].Pos,
+			})
+		}
+		ranges = append(ranges, storage.Range{
+			FromInc: preds[0].Pos,
+			ToExc:   self.pos,
+		})
+		if err = self.storage.View(func(bucket *bolt.Bucket) (err error) {
+			cursor := bucket.Cursor()
+			for k, v := cursor.Seek(self.pos); len(toOffer) < maintenanceChunkSize && k != nil && !ranges.Within(k); k, v = cursor.Next() {
+				toOffer = append(toOffer, [2][]byte{k, v})
+			}
+			for k, v := cursor.First(); bytes.Compare(k, self.pos) < 0 && len(toOffer) < maintenanceChunkSize && k != nil && !ranges.Within(k); k, v = cursor.Next() {
+				toOffer = append(toOffer, [2][]byte{k, v})
+			}
+			return
+		}); err != nil {
+			return
+		}
+		if err = self.offer(toOffer); err != nil {
+			return
+		}
+		log.Debugf("%v cleaned %v values outside %v\n", self, len(toOffer), ranges)
+		acted = len(toOffer) > 0
+		return
+	}); err != nil {
+		return
+	}
+	return
+}
+
+func (self *Node) cleanAndSync() {
+	stops := atomic.LoadUint64(&self.stops)
+	var acted bool
+	var err error
+	for acted, err = self.cleanOnce(stops); err == nil && acted && atomic.LoadUint64(&self.stops) == stops; acted, err = self.cleanOnce(stops) {
+	}
+	if err != nil {
+		log.Warnf("While trying to clean: %v", err)
+	}
+	anyAction := true
+	for anyAction && atomic.LoadUint64(&self.stops) == stops {
+		anyAction = false
+		for i := 0; i < common.NBackups; i++ {
+			for acted, err = self.syncOnceWith(i, stops); err == nil && acted && atomic.LoadUint64(&self.stops) == stops; acted, err = self.syncOnceWith(i, stops) {
+				anyAction = true
+			}
+			if err != nil {
+				log.Warnf("While trying to sync with backup %v: %v", i, err)
+			}
+		}
+	}
+}
+
+func (self *Node) syncOnceWith(i int, stops uint64) (acted bool, err error) {
+	if err = self.WhileRunning(func() (err error) {
+		if atomic.LoadUint64(&self.stops) != stops {
+			return
+		}
 		r := storage.Range{
 			FromInc: self.ring.Predecessors(self.pos, 1)[0].Pos,
 			ToExc:   self.pos,
 		}
 		peer := self.ring.Successors(self.pos, common.NBackups)[i]
-		ops, err := self.storage.Sync(storageTransport.RPCTransport(peer.ConnectionString), r, maintenanceChunkSize)
+		ops, err := self.storage.Sync(storageTransport.RPCTransport(peer.ConnectionString), r, maintenanceChunkSize, "")
 		if err != nil {
 			return
 		}
@@ -181,85 +275,6 @@ func (self *Node) syncOnceWith(i int) (acted bool, err error) {
 		return
 	}
 	return
-}
-
-func (self *Node) offer(data [][2][]byte) (err error) {
-	for _, kv := range data {
-		key := kv[0]
-		value := storage.Value(kv[1])
-		vRTS := value.ReadTimestamp()
-		peer := self.ring.Successors(key, 1)[0]
-		var current []byte
-		if err = switchboard.Switch.Call(peer.ConnectionString, "Synchronizable.Get", key, &current); err != nil {
-			return
-		}
-		curRTS := int64(-1)
-		if current != nil {
-			curRTS = storage.Value(current).ReadTimestamp()
-		}
-		if vRTS > curRTS {
-			if err = switchboard.Switch.Call(peer.ConnectionString, "Synchronizable.Put", kv, nil); err != nil {
-				return
-			}
-		}
-		if err = self.storage.Delete(key); err != nil {
-			return
-		}
-	}
-	return
-}
-
-func (self *Node) cleanOnce() (acted bool, err error) {
-	if err = self.WhileRunning(func() (err error) {
-		toOffer := [][2][]byte{}
-		var preds ring.Peers
-		if err = self.storage.View(func(bucket *bolt.Bucket) (err error) {
-			preds = self.ring.Predecessors(self.pos, common.NBackups+1)
-			cursor := bucket.Cursor()
-			for k, v := cursor.Seek(self.pos); len(toOffer) < maintenanceChunkSize && k != nil && (bytes.Compare(self.pos, k) <= 0 || bytes.Compare(preds[0].Pos, k) > 0); k, v = cursor.Next() {
-				toOffer = append(toOffer, [2][]byte{k, v})
-			}
-			for k, v := cursor.First(); len(toOffer) < maintenanceChunkSize && k != nil && (bytes.Compare(self.pos, k) <= 0 || bytes.Compare(preds[0].Pos, k) > 0); k, v = cursor.Next() {
-				toOffer = append(toOffer, [2][]byte{k, v})
-			}
-			return
-		}); err != nil {
-			return
-		}
-		if err = self.offer(toOffer); err != nil {
-			return
-		}
-		log.Debugf("%v cleaned %v values outside %v\n", self, len(toOffer), storage.Range{preds[0].Pos, self.pos})
-		acted = len(toOffer) > 0
-		return
-	}); err != nil {
-		return
-	}
-	return
-}
-
-func (self *Node) clean() {
-	stops := atomic.LoadUint64(&self.stops)
-	var acted bool
-	var err error
-	for acted, err = self.cleanOnce(); err == nil && acted && atomic.LoadUint64(&self.stops) == stops; acted, err = self.cleanOnce() {
-	}
-	if err != nil {
-		log.Warnf("While trying to clean: %v", err)
-	}
-}
-
-func (self *Node) synchronize() {
-	stops := atomic.LoadUint64(&self.stops)
-	for i := 0; i < common.NBackups; i++ {
-		var acted bool
-		var err error
-		for acted, err = self.syncOnceWith(i); err == nil && acted && atomic.LoadUint64(&self.stops) == stops; acted, err = self.syncOnceWith(i) {
-		}
-		if err != nil {
-			log.Warnf("While trying to sync with backup %v: %v", i, err)
-		}
-	}
 }
 
 func (self *Node) String() string {
@@ -303,7 +318,7 @@ func (self *Node) setupRaft() (err error) {
 		return
 	}
 	rpcTransport := &raftTransport.RPCTransport{
-		Stopper: self,
+		PeerRemover: self,
 	}
 	if self.raft, err = raft.NewServer(fmt.Sprintf("%08x", rand.Int63()), logdir, rpcTransport, self, self, self.server.Addr()); err != nil {
 		return
@@ -328,7 +343,8 @@ func (self *Node) setupPersistence() (err error) {
 
 func (self *Node) startServing() (err error) {
 	self.server.Serve("Raft", &raftTransport.RPCServer{
-		Raft: self.raft,
+		Raft:      self.raft,
+		PeerAdder: self,
 	})
 	self.server.Serve("Synchronizable", &storageTransport.RPCServer{
 		Storage: self.storage,
@@ -355,28 +371,23 @@ func (self *Node) lead() (err error) {
 	}); err != nil {
 		return
 	}
-	if _, err = self.raft.Do(&commands.AddPeerCommand{
-		Peer: self.AsPeer(),
-	}); err != nil {
-		return
-	}
+	self.ring.AddPeer(self.AsPeer())
 	log.Infof("%v is cluster leader", self)
 	return
 }
 
 func (self *Node) join(leader string) (err error) {
 	joinResp := &raftTransport.JoinResponse{}
-	if err = switchboard.Switch.Call(leader, "Raft.Join", &raft.DefaultJoinCommand{
-		Name:             self.raft.Name(),
-		ConnectionString: self.server.Addr(),
+	if err = switchboard.Switch.Call(leader, "Raft.Join", &raftTransport.JoinRequest{
+		RaftJoinCommand: &raft.DefaultJoinCommand{
+			Name:             self.raft.Name(),
+			ConnectionString: self.server.Addr(),
+		},
+		Pos: self.pos,
 	}, joinResp); err != nil {
 		return
 	}
-	master := &ring.Peer{}
-	if err = switchboard.Switch.Call(leader, "Node.AddPeer", self.AsPeer(), master); err != nil {
-		return
-	}
-	log.Infof("%v joined %v", self, master)
+	log.Infof("%v joined %v", self.raft.Name(), joinResp.Name)
 	return
 }
 
