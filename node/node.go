@@ -3,6 +3,7 @@ package node
 import (
 	"bytes"
 	"encoding/gob"
+	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"os"
@@ -16,7 +17,6 @@ import (
 	"github.com/zond/drafty/common"
 	"github.com/zond/drafty/log"
 	"github.com/zond/drafty/node/ring"
-	"github.com/zond/drafty/raft/commands"
 	raftTransport "github.com/zond/drafty/raft/transport"
 	"github.com/zond/drafty/storage"
 	storageTransport "github.com/zond/drafty/storage/transport"
@@ -31,27 +31,24 @@ const (
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
-	raft.RegisterCommand(&commands.StopCommand{})
-	raft.RegisterCommand(&commands.ContCommand{})
 }
 
 var posKey = []byte("pos")
 var metadataBucketKey = []byte("metadata")
 
 type Node struct {
-	pos            []byte
-	server         *switchboard.Server
-	dir            string
-	raft           raft.Server
-	ring           *ring.Ring
-	transactor     *transactor.Transactor
-	stopped        int32
-	stops          uint64
-	stopLock       sync.Mutex
-	stopCond       *sync.Cond
-	procsDoneGroup sync.WaitGroup
-	storage        *storage.DB
-	metadata       *bolt.DB
+	pos        []byte
+	server     *switchboard.Server
+	dir        string
+	raft       raft.Server
+	ring       *ring.Ring
+	transactor *transactor.Transactor
+	stops      uint64
+	stopped    int32
+	stopLock   sync.RWMutex
+	maintLock  sync.Mutex
+	storage    *storage.DB
+	metadata   *bolt.DB
 }
 
 func New(addr string, dir string) (result *Node, err error) {
@@ -60,7 +57,6 @@ func New(addr string, dir string) (result *Node, err error) {
 		dir:    dir,
 		ring:   ring.New(),
 	}
-	result.stopCond = sync.NewCond(&result.stopLock)
 	return
 }
 
@@ -104,61 +100,62 @@ func (self *Node) Addr() string {
 
 func (self *Node) Stop() (err error) {
 	self.stopLock.Lock()
-	defer self.stopLock.Unlock()
 	atomic.StoreInt32(&self.stopped, 1)
 	atomic.AddUint64(&self.stops, 1)
-	self.procsDoneGroup.Wait()
 	log.Debugf("%v stopped", self)
 	return
 }
 
 func (self *Node) Continue(r *ring.Ring) (err error) {
 	self.ring = r
-	atomic.StoreInt32(&self.stopped, 0)
-	self.stopCond.Broadcast()
+	if atomic.LoadInt32(&self.stopped) == 1 {
+		self.stopLock.Unlock()
+		atomic.StoreInt32(&self.stopped, 0)
+	}
 	go self.cleanAndSync()
 	log.Debugf("%v continued with ring %v", self, self.ring)
 	return
 }
 
-func (self *Node) WhileStopped(f func() error) (err error) {
-	if _, err = self.raft.Do(&commands.StopCommand{}); err != nil {
-		log.Warnf("Unable to issue stop command before running %v: %v", f, err)
+func (self *Node) WhileRunning(f func() error) error {
+	self.stopLock.RLock()
+	defer self.stopLock.RUnlock()
+	return f()
+}
+
+func (self *Node) updateRing(gen func(*ring.Ring) *ring.Ring) (err error) {
+	p := &common.Parallelizer{}
+	self.ring.Each(func(peer *ring.Peer) {
+		p.Start(func() error { return peer.Call("Node.Stop", struct{}{}, nil) })
+	})
+	if err = p.Wait(); err != nil {
 		return
 	}
-	defer func() {
-		if _, err = self.raft.Do(&commands.ContCommand{}); err != nil {
-			log.Fatalf("Unable to issue continue command after running %v: %v", f, err)
-		}
-		if err = self.raft.TakeSnapshot(); err != nil {
-			log.Warnf("Unable to issue continue command after running %v: %v", f, err)
-		}
-	}()
-	if err = f(); err != nil {
+	newRing := gen(self.ring)
+	p = &common.Parallelizer{}
+	newRing.Each(func(peer *ring.Peer) {
+		p.Start(func() error { return peer.Call("Node.Continue", newRing, nil) })
+	})
+	if err = p.Wait(); err != nil {
 		return
 	}
 	return
 }
 
-func (self *Node) WhileRunning(f func() error) error {
-	self.stopLock.Lock()
-	for atomic.LoadInt32(&self.stopped) == 1 {
-		self.stopCond.Wait()
-	}
-	self.stopLock.Unlock()
-	self.procsDoneGroup.Add(1)
-	defer self.procsDoneGroup.Done()
-	return f()
+func (self *Node) AddPeer(peer *ring.Peer) (err error) {
+	return self.updateRing(func(r *ring.Ring) (result *ring.Ring) {
+		result = self.ring.Clone()
+		result.AddPeer(peer)
+		return
+	})
 }
 
-func (self *Node) AddPeer(peer *ring.Peer) *ring.Ring {
-	self.ring.AddPeer(peer)
-	return self.ring
-}
-
-func (self *Node) RemovePeer(name string) *ring.Ring {
-	self.ring.RemovePeer(name)
-	return self.ring
+func (self *Node) RemovePeer(name string) (err error) {
+	return self.updateRing(func(r *ring.Ring) (result *ring.Ring) {
+		result = self.ring.Clone()
+		result.RemovePeer(name)
+		return
+	})
 }
 
 func (self *Node) offer(data [][2][]byte) (err error) {
@@ -176,7 +173,11 @@ func (self *Node) offer(data [][2][]byte) (err error) {
 				curRTS = storage.Value(current).ReadTimestamp()
 			}
 			if vRTS > curRTS {
-				if err = peer.Call("Synchronizable.Put", kv, nil); err != nil {
+				if err = peer.Call("Synchronizable.Put", &storageTransport.PutRequest{
+					Logs:  fmt.Sprintf("%v offering to %v", hex.EncodeToString(self.pos), hex.EncodeToString(peer.Pos)),
+					Key:   key,
+					Value: value,
+				}, nil); err != nil {
 					return
 				}
 			}
@@ -207,13 +208,22 @@ func (self *Node) cleanOnce(stops uint64) (acted bool, err error) {
 			FromInc: preds[0].Pos,
 			ToExc:   self.pos,
 		})
+		log.Tracef("%v cleaning outside of %v", hex.EncodeToString(self.pos), ranges)
 		if err = self.storage.View(func(bucket *bolt.Bucket) (err error) {
 			cursor := bucket.Cursor()
 			for k, v := cursor.Seek(self.pos); len(toOffer) < maintenanceChunkSize && k != nil && !ranges.Within(k); k, v = cursor.Next() {
-				toOffer = append(toOffer, [2][]byte{k, v})
+				log.Tracef("%v cleaning: %v => %v does NOT belong here\n", hex.EncodeToString(self.pos), hex.EncodeToString(k), v)
+				toOffer = append(toOffer, [2][]byte{
+					append([]byte{}, k...),
+					append([]byte{}, v...),
+				})
 			}
 			for k, v := cursor.First(); bytes.Compare(k, self.pos) < 0 && len(toOffer) < maintenanceChunkSize && k != nil && !ranges.Within(k); k, v = cursor.Next() {
-				toOffer = append(toOffer, [2][]byte{k, v})
+				log.Tracef("%v cleaning: %v => %v does NOT belong here\n", hex.EncodeToString(self.pos), hex.EncodeToString(k), v)
+				toOffer = append(toOffer, [2][]byte{
+					append([]byte{}, k...),
+					append([]byte{}, v...),
+				})
 			}
 			return
 		}); err != nil {
@@ -232,6 +242,8 @@ func (self *Node) cleanOnce(stops uint64) (acted bool, err error) {
 }
 
 func (self *Node) cleanAndSync() {
+	self.maintLock.Lock()
+	defer self.maintLock.Unlock()
 	stops := atomic.LoadUint64(&self.stops)
 	var acted bool
 	var err error
@@ -264,7 +276,7 @@ func (self *Node) syncOnceWith(i int, stops uint64) (acted bool, err error) {
 			ToExc:   self.pos,
 		}
 		peer := self.ring.Successors(self.pos, common.NBackups)[i]
-		ops, err := self.storage.Sync(storageTransport.RPCTransport(peer.ConnectionString), r, maintenanceChunkSize, "")
+		ops, err := self.storage.Sync(storageTransport.RPCTransport(peer.ConnectionString), r, maintenanceChunkSize, fmt.Sprintf("%v syncing with %v", hex.EncodeToString(self.pos), hex.EncodeToString(peer.Pos)))
 		if err != nil {
 			return
 		}
@@ -343,8 +355,7 @@ func (self *Node) setupPersistence() (err error) {
 
 func (self *Node) startServing() (err error) {
 	self.server.Serve("Raft", &raftTransport.RPCServer{
-		Raft:      self.raft,
-		PeerAdder: self,
+		Raft: self.raft,
 	})
 	self.server.Serve("Synchronizable", &storageTransport.RPCServer{
 		Storage: self.storage,
@@ -377,8 +388,8 @@ func (self *Node) lead() (err error) {
 }
 
 func (self *Node) join(leader string) (err error) {
-	joinResp := &raftTransport.JoinResponse{}
-	if err = switchboard.Switch.Call(leader, "Raft.Join", &raftTransport.JoinRequest{
+	joinResp := &JoinResponse{}
+	if err = switchboard.Switch.Call(leader, "Node.Join", &JoinRequest{
 		RaftJoinCommand: &raft.DefaultJoinCommand{
 			Name:             self.raft.Name(),
 			ConnectionString: self.server.Addr(),
