@@ -10,6 +10,7 @@ import (
 	"github.com/boltdb/bolt"
 	"github.com/kr/pretty"
 	"github.com/spaolacci/murmur3"
+	"github.com/zond/drafty/log"
 )
 
 var valueBucketKey = []byte("values")
@@ -17,7 +18,7 @@ var merkleBucketKey = []byte("merkles")
 
 type Synchronizable interface {
 	Hash() ([]byte, error)
-	Put([]byte, Value) error
+	Put([]byte, Value, string) error
 	Get([]byte) (Value, error)
 	Hashes([]byte, uint) ([256][]byte, error)
 }
@@ -309,6 +310,7 @@ func (self *DB) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOp
 		if r.PrefixWithin(newPrefix) {
 			if bytes.Compare(hashes[i], oHashes[i]) != 0 {
 				if r.Within(newPrefix) {
+					log.Tracef("%v found %v to be different", logs, hex.EncodeToString(newPrefix))
 					var value Value
 					if value, err = self.Get(newPrefix); err != nil {
 						return
@@ -330,7 +332,8 @@ func (self *DB) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOp
 						if vRTS < oRTS {
 							dst, target = self, oValue
 						}
-						if err = dst.Put(newPrefix, target); err != nil {
+						log.Tracef("%v sync putting %v => %v\n", logs, hex.EncodeToString(newPrefix), target)
+						if err = dst.Put(newPrefix, target, logs); err != nil {
 							return
 						}
 						ops++
@@ -480,7 +483,7 @@ func (self *DB) Hash() (result []byte, err error) {
 		if merkles == nil {
 			return
 		}
-		result = merkles.Get([]byte{0})
+		result = append([]byte{}, merkles.Get([]byte{0})...)
 		return
 	}); err != nil {
 		return
@@ -491,7 +494,7 @@ func (self *DB) Hash() (result []byte, err error) {
 func (self *DB) PutString(key string, value string) (err error) {
 	val := make([]byte, 17+len(value))
 	copy(val[17:], value)
-	return self.Put([]byte(key), val)
+	return self.Put([]byte(key), val, "")
 }
 
 func (self *DB) GetString(key string) (result string, err error) {
@@ -513,7 +516,10 @@ func (self *DB) Get(key []byte) (result Value, err error) {
 			err = fmt.Errorf("Database has no value bucket?")
 			return
 		}
-		result = Value(valueBucket.Get(key))
+		val := valueBucket.Get(key)
+		if val != nil {
+			result = Value(append([]byte{}, val...))
+		}
 		return
 	}); err != nil {
 		return
@@ -547,7 +553,7 @@ func (self *DB) Delete(key []byte) (err error) {
 	}
 	return
 }
-func (self *DB) Put(key []byte, value Value) (err error) {
+func (self *DB) Put(key []byte, value Value, logs string) (err error) {
 	if len(value) < 17 {
 		err = fmt.Errorf("%v needs to be at least 17 bytes long to have a read timestamp (first 8 bytes), write timestamp (next 8 bytes) and flag byte", value)
 		return
@@ -571,5 +577,6 @@ func (self *DB) Put(key []byte, value Value) (err error) {
 	}); err != nil {
 		return
 	}
+	log.Tracef("%v inserted %v => %v\n", logs, hex.EncodeToString(key), value)
 	return
 }
