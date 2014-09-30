@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -17,6 +18,18 @@ import (
 
 var nextPort = 9797
 
+func init() {
+	testfiles, err := filepath.Glob("test-*")
+	if err != nil {
+		panic(err)
+	}
+	for _, testfile := range testfiles {
+		if err := os.RemoveAll(testfile); err != nil {
+			panic(err)
+		}
+	}
+}
+
 func withNode(t *testing.T, f func(*Node)) {
 	dirname := fmt.Sprintf("test-%v", rand.Int63())
 	node, err := New(fmt.Sprintf("127.0.0.1:%v", nextPort), dirname)
@@ -26,9 +39,6 @@ func withNode(t *testing.T, f func(*Node)) {
 	defer func() {
 		if err := node.Stop(); err != nil {
 			t.Errorf("%v", err)
-		}
-		if err := os.RemoveAll(dirname); err != nil {
-			t.Fatalf("%v", err)
 		}
 	}()
 	nextPort += 1
@@ -152,7 +162,7 @@ func withCluster(t *testing.T, f func(*ring.Ring, []*Node), prep func(*Node, int
 }
 
 func TestJoining(t *testing.T) {
-	log.Level = 10
+	log.Level = log.Warn
 	withCluster(t, func(r *ring.Ring, n []*Node) {
 		assertRing(t, n[0], r)
 		assertRing(t, n[1], r)
@@ -162,7 +172,7 @@ func TestJoining(t *testing.T) {
 }
 
 func TestSyncAndClean(t *testing.T) {
-	//log.Level = 10
+	log.Level = log.Warn
 	val := make([]byte, 18)
 	val[17] = 1
 	keys := [][][]byte{}
@@ -174,7 +184,7 @@ func TestSyncAndClean(t *testing.T) {
 		keys = append(keys, nodeKeys)
 	}
 	withCluster(t, func(r *ring.Ring, n []*Node) {
-		assertWithin(t, time.Second*20, func(f *failer) {
+		assertWithin(t, time.Second*5, func(f *failer) {
 			for _, keyset := range keys {
 				for _, key := range keyset {
 					successors := r.Successors(key, common.NBackups+1)
@@ -199,7 +209,7 @@ func TestSyncAndClean(t *testing.T) {
 	}, func(n *Node, i int) {
 		if i < 3 {
 			for _, key := range keys[i] {
-				if err := n.storage.Put(key, val); err != nil {
+				if err := n.storage.Put(key, val, fmt.Sprintf("test setup of %v", hex.EncodeToString(n.pos))); err != nil {
 					t.Fatalf("%v", err)
 				}
 			}
