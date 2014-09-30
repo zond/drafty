@@ -18,8 +18,14 @@ func (self *RPCServer) Hash(a struct{}, result *[]byte) (err error) {
 	return
 }
 
-func (self *RPCServer) Put(kv [2][]byte, a *struct{}) (err error) {
-	return self.Storage.Put(kv[0], kv[1])
+type PutRequest struct {
+	Logs  string
+	Key   []byte
+	Value []byte
+}
+
+func (self *RPCServer) Put(req *PutRequest, a *struct{}) (err error) {
+	return self.Storage.Put(req.Key, req.Value, req.Logs)
 }
 
 func (self *RPCServer) Get(key []byte, result *[]byte) (err error) {
@@ -52,8 +58,12 @@ func (self RPCTransport) Hash() (result []byte, err error) {
 	return
 }
 
-func (self RPCTransport) Put(key []byte, value storage.Value) (err error) {
-	err = switchboard.Switch.Call(string(self), "Synchronizable.Put", [2][]byte{key, value}, nil)
+func (self RPCTransport) Put(key []byte, value storage.Value, logs string) (err error) {
+	err = switchboard.Switch.Call(string(self), "Synchronizable.Put", &PutRequest{
+		Key:   key,
+		Value: value,
+		Logs:  logs,
+	}, nil)
 	return
 }
 
