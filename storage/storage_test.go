@@ -57,7 +57,7 @@ func TestPartialSyncAll(t *testing.T) {
 		withDB(t, func(db1 *DB) {
 			withDB(t, func(db2 *DB) {
 				for i := 0; i < 1000; i++ {
-					if err := db1.Put(randomKey(4), randomValue(4)); err != nil {
+					if err := db1.Put(randomKey(4), randomValue(4), ""); err != nil {
 						return
 					}
 					if err := db1.Delete(randomKey(4)); err != nil {
@@ -189,13 +189,13 @@ func TestSyncAll(t *testing.T) {
 	withDB(t, func(db1 *DB) {
 		withDB(t, func(db2 *DB) {
 			for i := 0; i < 1000; i++ {
-				if err := db1.Put(randomKey(4), randomValue(4)); err != nil {
+				if err := db1.Put(randomKey(4), randomValue(4), ""); err != nil {
 					t.Fatalf("%v", err)
 				}
 				if err := db1.Delete(randomKey(4)); err != nil {
 					t.Fatalf("%v", err)
 				}
-				if err := db2.Put(randomKey(4), randomValue(4)); err != nil {
+				if err := db2.Put(randomKey(4), randomValue(4), ""); err != nil {
 					t.Fatalf("%v", err)
 				}
 				if err := db2.Delete(randomKey(4)); err != nil {
@@ -236,7 +236,7 @@ func BenchmarkPut(b *testing.B) {
 		}
 		b.StartTimer()
 		for i := 0; i < b.N; i++ {
-			db.Put(keys[i], values[i])
+			db.Put(keys[i], values[i], "")
 		}
 		b.StopTimer()
 	})
@@ -257,7 +257,7 @@ func TestTopHash(t *testing.T) {
 	withDB(t, func(db1 *DB) {
 		withDB(t, func(db2 *DB) {
 			for _, i := range rand.Perm(len(keys)) {
-				if err := db1.Put(keys[i], values[i]); err != nil {
+				if err := db1.Put(keys[i], values[i], ""); err != nil {
 					t.Fatalf("%v", err)
 				}
 			}
@@ -267,7 +267,7 @@ func TestTopHash(t *testing.T) {
 				}
 			}
 			for _, i := range rand.Perm(len(keys)) {
-				if err := db2.Put(keys[i], values[i]); err != nil {
+				if err := db2.Put(keys[i], values[i], ""); err != nil {
 					t.Fatalf("%v", err)
 				}
 			}
