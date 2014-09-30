@@ -105,13 +105,10 @@ func (self *Ring) Len() int {
 	return len(self.peers)
 }
 
-func (self *Ring) Each(f func(*Peer) error) (err error) {
+func (self *Ring) Each(f func(*Peer)) {
 	for _, peer := range self.peers {
-		if err = f(peer); err != nil {
-			return
-		}
+		f(peer)
 	}
-	return
 }
 
 func (self *Ring) Clone() (result *Ring) {
