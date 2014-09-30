@@ -5,10 +5,11 @@ import (
 	goLog "log"
 )
 
-var Level = 0
+var Level = Info
 
 const (
-	Debug = iota
+	Trace = iota
+	Debug
 	Info
 	Warn
 	Error
@@ -18,6 +19,12 @@ const (
 func log(f func(string, ...interface{}), prefix string, format string, args ...interface{}) {
 	format = fmt.Sprintf("%v\t%v", prefix, format)
 	f(format, args...)
+}
+
+func Tracef(format string, args ...interface{}) {
+	if Level <= Trace {
+		log(goLog.Printf, "DEBUG", format, args...)
+	}
 }
 
 func Debugf(format string, args ...interface{}) {
