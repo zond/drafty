@@ -53,14 +53,11 @@ var commands = map[string]func() error{
 		if err = switchboard.Switch.Call(*host, "Node.GetRing", struct{}{}, r); err != nil {
 			return
 		}
-		if err = r.Each(func(p *ring.Peer) (err error) {
-			if err = switchboard.Switch.Call(p.ConnectionString, "Debug.Dump", struct{}{}, nil); err != nil {
-				return
+		r.Each(func(p *ring.Peer) {
+			if err := switchboard.Switch.Call(p.ConnectionString, "Debug.Dump", struct{}{}, nil); err != nil {
+				panic(err)
 			}
-			return
-		}); err != nil {
-			return
-		}
+		})
 		return
 	},
 }
