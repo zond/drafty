@@ -13,31 +13,6 @@ const (
 	rpcInitialBackoff = time.Millisecond * 10
 )
 
-type TX struct {
-	*common.TX
-	client     *Client
-	buffer     map[string][]byte
-	uwByKey    map[string][][]byte
-	wroteByKey map[string]int64
-}
-
-func (self *TX) Get(key []byte) (result []byte, err error) {
-	skey := string(key)
-	result, found := self.buffer[skey]
-	if found {
-		return
-	}
-	resp := &common.TXGetResp{}
-	if err = self.client.callSuccessorOf(key, "TX.Get", &common.TXGetReq{TX: self.TX, Key: key}, resp); err != nil {
-		return
-	}
-	self.buffer[skey] = resp.Value
-	self.wroteByKey[skey] = resp.Wrote
-	self.uwByKey[skey] = resp.UW
-	result = resp.Value
-	return
-}
-
 type Client struct {
 	ring *ring.Ring
 }
@@ -93,7 +68,16 @@ func (self *Client) Transact(f func(*TX) error) (err error) {
 		uwByKey:    map[string][][]byte{},
 		wroteByKey: map[string]int64{},
 	}
+	defer func() {
+		if e := recover(); e != nil {
+			tx.Abort()
+		}
+	}()
 	if err = f(tx); err != nil {
+		tx.Abort()
+		return
+	}
+	if err = tx.Commit(); err != nil {
 		return
 	}
 	return

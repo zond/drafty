@@ -17,6 +17,7 @@ import (
 	"github.com/zond/drafty/common"
 	"github.com/zond/drafty/log"
 	"github.com/zond/drafty/node/ring"
+	nodeTransport "github.com/zond/drafty/node/transport"
 	raftTransport "github.com/zond/drafty/raft/transport"
 	"github.com/zond/drafty/storage"
 	storageTransport "github.com/zond/drafty/storage/transport"
@@ -117,6 +118,16 @@ func (self *Node) Continue(r *ring.Ring) (err error) {
 	return
 }
 
+func (self *Node) Dump() (result string, err error) {
+	if err = self.WhileRunning(func() (err error) {
+		result = self.storage.PPStrings()
+		return
+	}); err != nil {
+		return
+	}
+	return
+}
+
 func (self *Node) WhileRunning(f func() error) error {
 	self.stopLock.RLock()
 	defer self.stopLock.RUnlock()
@@ -137,6 +148,33 @@ func (self *Node) updateRing(gen func(*ring.Ring) *ring.Ring) (err error) {
 		p.Start(func() error { return peer.Call("Node.Continue", newRing, nil) })
 	})
 	if err = p.Wait(); err != nil {
+		return
+	}
+	return
+}
+
+func (self *Node) LeaderForward(method string, input interface{}, output interface{}) (forwarded bool, err error) {
+	if self.raft.Name() == self.raft.Leader() {
+		return
+	}
+	forwarded = true
+	err = switchboard.Switch.Call(self.raft.Peers()[self.raft.Leader()].ConnectionString, method, input, output)
+	return
+}
+
+func (self *Node) Name() string {
+	return self.raft.Name()
+}
+
+func (self *Node) RaftDo(cmd raft.Command) (result interface{}, err error) {
+	return self.raft.Do(cmd)
+}
+
+func (self *Node) Ring() (result *ring.Ring, err error) {
+	if err = self.WhileRunning(func() (err error) {
+		result = self.ring
+		return
+	}); err != nil {
 		return
 	}
 	return
@@ -360,14 +398,14 @@ func (self *Node) startServing() (err error) {
 	self.server.Serve("Synchronizable", &storageTransport.RPCServer{
 		Storage: self.storage,
 	})
-	self.server.Serve("Node", &RPCServer{
-		node: self,
+	self.server.Serve("Node", &nodeTransport.RPCServer{
+		Controllable: self,
 	})
 	self.server.Serve("TX", &transactorTransport.RPCServer{
 		Transactor: self.transactor,
 	})
-	self.server.Serve("Debug", &DebugRPCServer{
-		node: self,
+	self.server.Serve("Debug", &nodeTransport.DebugRPCServer{
+		Debuggable: self,
 	})
 	if err = self.raft.Start(); err != nil {
 		return
@@ -388,8 +426,8 @@ func (self *Node) lead() (err error) {
 }
 
 func (self *Node) join(leader string) (err error) {
-	joinResp := &JoinResponse{}
-	if err = switchboard.Switch.Call(leader, "Node.Join", &JoinRequest{
+	joinResp := &nodeTransport.JoinResponse{}
+	if err = switchboard.Switch.Call(leader, "Node.Join", &nodeTransport.JoinRequest{
 		RaftJoinCommand: &raft.DefaultJoinCommand{
 			Name:             self.raft.Name(),
 			ConnectionString: self.server.Addr(),
