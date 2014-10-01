@@ -5,16 +5,20 @@ import (
 	"github.com/zond/drafty/storage"
 )
 
+type Backend interface {
+	Get([]byte) (storage.Value, error)
+}
+
 type Transactor struct {
-	storage *storage.DB
+	Backend Backend
 	txById  map[string]*common.TX
 	urByKey map[string][]*common.TX
 	uwByKey map[string][]*common.TX
 }
 
-func New(storage *storage.DB) (result *Transactor) {
+func New(backend Backend) (result *Transactor) {
 	return &Transactor{
-		storage: storage,
+		Backend: backend,
 		txById:  map[string]*common.TX{},
 		urByKey: map[string][]*common.TX{},
 		uwByKey: map[string][]*common.TX{},
@@ -23,7 +27,7 @@ func New(storage *storage.DB) (result *Transactor) {
 
 func (self *Transactor) Get(tx *common.TX, key []byte) (result *common.TXGetResp, err error) {
 	// load data from storage
-	value, err := self.storage.Get(key)
+	value, err := self.Backend.Get(key)
 	if err != nil {
 		return
 	}

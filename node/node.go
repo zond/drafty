@@ -384,7 +384,7 @@ func (self *Node) setupPersistence() (err error) {
 	if self.storage, err = storage.New(filepath.Join(self.dir, "storage.db")); err != nil {
 		return
 	}
-	self.transactor = transactor.New(self.storage)
+	self.transactor = transactor.New(&transactorBackend{node: self})
 	if self.metadata, err = bolt.Open(filepath.Join(self.dir, "metadata.db"), 0700, nil); err != nil {
 		return
 	}
