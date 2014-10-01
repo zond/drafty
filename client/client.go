@@ -1,10 +1,10 @@
 package client
 
 import (
+	"time"
+
 	"github.com/zond/drafty/peer/ring"
 	"github.com/zond/drafty/switchboard"
-	"github.com/zond/drafty/transactor/messages"
-	"time"
 )
 
 const (
@@ -58,15 +58,7 @@ func (self *Client) callSuccessorOf(id []byte, service string, input interface{}
 }
 
 func (self *Client) Transact(f func(*TX) error) (err error) {
-	tx := &TX{
-		TX: &messages.TX{
-			Id: ring.RandomPos(4),
-		},
-		client:     self,
-		buffer:     map[string][]byte{},
-		uwByKey:    map[string][][]byte{},
-		wroteByKey: map[string]int64{},
-	}
+	tx := newTX(self.ring)
 	defer func() {
 		if e := recover(); e != nil {
 			tx.Abort()

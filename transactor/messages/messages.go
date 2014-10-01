@@ -8,15 +8,9 @@ const (
 	TXRunning TXState = iota
 )
 
-type TXGetReq struct {
+type GetRequest struct {
 	TX  *TX
 	Key []byte
-}
-
-type TXGetResp struct {
-	Value []byte
-	Wrote int64
-	UW    [][]byte
 }
 
 type TX struct {
@@ -24,4 +18,15 @@ type TX struct {
 	Lower *time.Time
 	Upper *time.Time
 	State TXState
+}
+
+type Value struct {
+	Data           []byte
+	UW             [][]byte
+	WriteTimestamp int64
+	ReadTimestamp  int64
+}
+
+type NodeMeta struct {
+	Values map[string]*Value
 }

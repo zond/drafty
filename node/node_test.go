@@ -18,6 +18,8 @@ import (
 
 var nextPort = 9797
 
+var dbFiles = []string{}
+
 func init() {
 	testfiles, err := filepath.Glob("test-*")
 	if err != nil {
@@ -36,6 +38,7 @@ func withNode(t *testing.T, f func(*Node)) {
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
+	dbFiles = append(dbFiles, dirname)
 	defer func() {
 		if err := node.Stop(); err != nil {
 			t.Errorf("%v", err)
@@ -215,4 +218,12 @@ func TestSyncAndClean(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestCleanup(t *testing.T) {
+	for _, dbFile := range dbFiles {
+		if err := os.RemoveAll(dbFile); err != nil {
+			t.Errorf("%v", err)
+		}
+	}
 }
