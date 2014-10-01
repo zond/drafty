@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zond/drafty/common"
 	"github.com/zond/drafty/log"
+	"github.com/zond/drafty/peer"
 	"github.com/zond/drafty/peer/ring"
 )
 
@@ -133,15 +133,15 @@ func withCluster(t *testing.T, f func(*ring.Ring, []*Node), prep func(*Node, int
 					if prep != nil {
 						prep(n1, 0)
 					}
-					n2.Start(n1.Addr())
+					n2.Start(n1.server.Addr())
 					if prep != nil {
 						prep(n2, 1)
 					}
-					n3.Start(n1.Addr())
+					n3.Start(n1.server.Addr())
 					if prep != nil {
 						prep(n3, 2)
 					}
-					n4.Start(n1.Addr())
+					n4.Start(n1.server.Addr())
 					if prep != nil {
 						prep(n4, 3)
 					}
@@ -150,7 +150,7 @@ func withCluster(t *testing.T, f func(*ring.Ring, []*Node), prep func(*Node, int
 					r.AddPeer(n2.peer.AsPeer())
 					r.AddPeer(n3.peer.AsPeer())
 					r.AddPeer(n4.peer.AsPeer())
-					n := peers{
+					n := nodes{
 						n1, n2, n3, n4,
 					}
 					sort.Sort(n)
@@ -187,19 +187,19 @@ func TestSyncAndClean(t *testing.T) {
 		assertWithin(t, time.Second*5, func(f *failer) {
 			for _, keyset := range keys {
 				for _, key := range keyset {
-					successors := r.Successors(key, common.NBackups+1)
+					successors := r.Successors(key, peer.NBackups+1)
 					for _, node := range n {
-						v, err := node.storage.Get(key)
+						v, err := node.peer.Storage().Get(key)
 						if err != nil {
 							f.Fatalf("Unable to load %v from %v: %v", key, node, err)
 						}
-						if successors.ContainsPos(node.pos) {
+						if successors.ContainsPos(node.peer.Pos()) {
 							if bytes.Compare(val, v) != 0 {
-								f.Errorf("Wrong value for %v %v in %v: %v", r, hex.EncodeToString(key), hex.EncodeToString(node.pos), v)
+								f.Errorf("Wrong value for %v %v in %v: %v", r, hex.EncodeToString(key), hex.EncodeToString(node.peer.Pos()), v)
 							}
 						} else {
 							if v != nil {
-								f.Errorf("Wrong value for %v %v in %v: %v", r, hex.EncodeToString(key), hex.EncodeToString(node.pos), v)
+								f.Errorf("Wrong value for %v %v in %v: %v", r, hex.EncodeToString(key), hex.EncodeToString(node.peer.Pos()), v)
 							}
 						}
 					}
@@ -209,7 +209,7 @@ func TestSyncAndClean(t *testing.T) {
 	}, func(n *Node, i int) {
 		if i < 3 {
 			for _, key := range keys[i] {
-				if err := n.storage.Put(key, val, fmt.Sprintf("test setup of %v", hex.EncodeToString(n.pos))); err != nil {
+				if err := n.peer.Storage().Put(key, val, fmt.Sprintf("test setup of %v", hex.EncodeToString(n.peer.Pos()))); err != nil {
 					t.Fatalf("%v", err)
 				}
 			}

@@ -1,9 +1,9 @@
 package client
 
-import "github.com/zond/drafty/common"
+import "github.com/zond/drafty/transactor/messages"
 
 type TX struct {
-	*common.TX
+	*messages.TX
 	client     *Client
 	buffer     map[string][]byte
 	uwByKey    map[string][][]byte
@@ -32,8 +32,8 @@ func (self *TX) Get(key []byte) (result []byte, err error) {
 	if found {
 		return
 	}
-	resp := &common.TXGetResp{}
-	if err = self.client.callSuccessorOf(key, "TX.Get", &common.TXGetReq{TX: self.TX, Key: key}, resp); err != nil {
+	resp := &messages.TXGetResp{}
+	if err = self.client.callSuccessorOf(key, "TX.Get", &messages.TXGetReq{TX: self.TX, Key: key}, resp); err != nil {
 		return
 	}
 	self.buffer[skey] = resp.Value

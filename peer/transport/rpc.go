@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"github.com/goraft/raft"
 	"github.com/zond/drafty/log"
 	"github.com/zond/drafty/peer"
 	"github.com/zond/drafty/peer/messages"
@@ -15,16 +14,6 @@ type DebugRPCServer struct {
 func (self *DebugRPCServer) Dump(a struct{}, b *struct{}) (err error) {
 	log.Debugf(self.Peer.Dump())
 	return
-}
-
-type Controllable interface {
-	Ring() (*ring.Ring, error)
-	Stop() error
-	Continue(*ring.Ring) error
-	AddPeer(*ring.Peer) error
-	Name() string
-	LeaderForward(string, interface{}, interface{}) (bool, error)
-	RaftDo(raft.Command) (interface{}, error)
 }
 
 type RPCServer struct {
