@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/zond/drafty/node/ring"
+	"github.com/zond/drafty/peer/ring"
 	"github.com/zond/drafty/switchboard"
 )
 
@@ -50,7 +50,7 @@ var commands = map[string]func() error{
 	},
 	debugDump: func() (err error) {
 		r := &ring.Ring{}
-		if err = switchboard.Switch.Call(*host, "Node.Ring", struct{}{}, r); err != nil {
+		if err = switchboard.Switch.Call(*host, "Peer.Ring", struct{}{}, r); err != nil {
 			return
 		}
 		r.Each(func(p *ring.Peer) {

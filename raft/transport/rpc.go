@@ -84,12 +84,12 @@ func (self *RPCTransport) kick(peer *raft.Peer) {
 	if _, err := self.Raft.Do(&raft.DefaultLeaveCommand{
 		Name: peer.Name,
 	}); err != nil {
-		log.Warnf("Unable to kick unreachable node %v from raft: %v", peer.Name, err)
+		log.Warnf("Unable to kick unreachable peer %v from raft: %v", peer.Name, err)
 		return
 	}
 	log.Infof("%v kicked %v from raft", self.Raft.Name(), peer.Name)
 	if err := self.PeerRemover.RemovePeer(peer.Name); err != nil {
-		log.Warnf("Unable to kick unreachable node %v from ring: %v", peer.Name, err)
+		log.Warnf("Unable to kick unreachable peer %v from ring: %v", peer.Name, err)
 		return
 	}
 	log.Infof("%v kicked %v from ring", self.Raft.Name(), peer.Name)

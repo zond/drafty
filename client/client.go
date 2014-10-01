@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/zond/drafty/common"
-	"github.com/zond/drafty/node/ring"
+	"github.com/zond/drafty/peer/ring"
 	"github.com/zond/drafty/switchboard"
 )
 
@@ -21,7 +21,7 @@ func New(host string) (result *Client, err error) {
 	result = &Client{
 		ring: ring.New(),
 	}
-	if err = switchboard.Switch.Call(host, "Node.Ring", struct{}{}, result.ring); err != nil {
+	if err = switchboard.Switch.Call(host, "Peer.Ring", struct{}{}, result.ring); err != nil {
 		return
 	}
 	return
@@ -30,7 +30,7 @@ func New(host string) (result *Client, err error) {
 func (self *Client) refresh() (err error) {
 	for {
 		peer := self.ring.Rand()
-		if err = switchboard.Switch.Call(peer.ConnectionString, "Node.Ring", struct{}{}, self.ring); err == nil {
+		if err = switchboard.Switch.Call(peer.ConnectionString, "Peer.Ring", struct{}{}, self.ring); err == nil {
 			break
 		}
 		self.ring.RemovePeer(peer.Name)

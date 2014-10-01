@@ -1,4 +1,4 @@
-package node
+package peer
 
 import (
 	"bytes"
@@ -16,8 +16,8 @@ import (
 	"github.com/goraft/raft"
 	"github.com/zond/drafty/common"
 	"github.com/zond/drafty/log"
-	"github.com/zond/drafty/node/ring"
-	nodeTransport "github.com/zond/drafty/node/transport"
+	"github.com/zond/drafty/peer/ring"
+	peerTransport "github.com/zond/drafty/peer/transport"
 	raftTransport "github.com/zond/drafty/raft/transport"
 	"github.com/zond/drafty/storage"
 	storageTransport "github.com/zond/drafty/storage/transport"
@@ -37,7 +37,7 @@ func init() {
 var posKey = []byte("pos")
 var metadataBucketKey = []byte("metadata")
 
-type Node struct {
+type Peer struct {
 	pos        []byte
 	server     *switchboard.Server
 	dir        string
@@ -52,8 +52,8 @@ type Node struct {
 	metadata   *bolt.DB
 }
 
-func New(addr string, dir string) (result *Node, err error) {
-	result = &Node{
+func New(addr string, dir string) (result *Peer, err error) {
+	result = &Peer{
 		server: switchboard.NewServer(addr),
 		dir:    dir,
 		ring:   ring.New(),
@@ -67,15 +67,15 @@ func (self MultiError) Error() string {
 	return fmt.Sprint([]error(self))
 }
 
-type nodeState struct {
+type peerState struct {
 	Ring    *ring.Ring
 	Stopped int32
 }
 
-func (self *Node) Save() (b []byte, err error) {
+func (self *Peer) Save() (b []byte, err error) {
 	log.Debugf("Compacting log")
 	buf := &bytes.Buffer{}
-	if err = gob.NewEncoder(buf).Encode(nodeState{
+	if err = gob.NewEncoder(buf).Encode(peerState{
 		Ring:    self.ring,
 		Stopped: atomic.LoadInt32(&self.stopped),
 	}); err != nil {
@@ -84,9 +84,9 @@ func (self *Node) Save() (b []byte, err error) {
 	return
 }
 
-func (self *Node) Recovery(b []byte) (err error) {
+func (self *Peer) Recovery(b []byte) (err error) {
 	log.Debugf("Recovering from log")
-	state := &nodeState{}
+	state := &peerState{}
 	if err = gob.NewDecoder(bytes.NewBuffer(b)).Decode(state); err != nil {
 		return
 	}
@@ -95,11 +95,11 @@ func (self *Node) Recovery(b []byte) (err error) {
 	return
 }
 
-func (self *Node) Addr() string {
+func (self *Peer) Addr() string {
 	return self.server.Addr()
 }
 
-func (self *Node) Stop() (err error) {
+func (self *Peer) Stop() (err error) {
 	self.stopLock.Lock()
 	atomic.StoreInt32(&self.stopped, 1)
 	atomic.AddUint64(&self.stops, 1)
@@ -107,7 +107,7 @@ func (self *Node) Stop() (err error) {
 	return
 }
 
-func (self *Node) Continue(r *ring.Ring) (err error) {
+func (self *Peer) Continue(r *ring.Ring) (err error) {
 	self.ring = r
 	if atomic.LoadInt32(&self.stopped) == 1 {
 		self.stopLock.Unlock()
@@ -118,7 +118,7 @@ func (self *Node) Continue(r *ring.Ring) (err error) {
 	return
 }
 
-func (self *Node) Dump() (result string, err error) {
+func (self *Peer) Dump() (result string, err error) {
 	if err = self.WhileRunning(func() (err error) {
 		result = self.storage.PPStrings()
 		return
@@ -128,16 +128,16 @@ func (self *Node) Dump() (result string, err error) {
 	return
 }
 
-func (self *Node) WhileRunning(f func() error) error {
+func (self *Peer) WhileRunning(f func() error) error {
 	self.stopLock.RLock()
 	defer self.stopLock.RUnlock()
 	return f()
 }
 
-func (self *Node) updateRing(gen func(*ring.Ring) *ring.Ring) (err error) {
+func (self *Peer) updateRing(gen func(*ring.Ring) *ring.Ring) (err error) {
 	p := &common.Parallelizer{}
 	self.ring.Each(func(peer *ring.Peer) {
-		p.Start(func() error { return peer.Call("Node.Stop", struct{}{}, nil) })
+		p.Start(func() error { return peer.Call("Peer.Stop", struct{}{}, nil) })
 	})
 	if err = p.Wait(); err != nil {
 		return
@@ -145,7 +145,7 @@ func (self *Node) updateRing(gen func(*ring.Ring) *ring.Ring) (err error) {
 	newRing := gen(self.ring)
 	p = &common.Parallelizer{}
 	newRing.Each(func(peer *ring.Peer) {
-		p.Start(func() error { return peer.Call("Node.Continue", newRing, nil) })
+		p.Start(func() error { return peer.Call("Peer.Continue", newRing, nil) })
 	})
 	if err = p.Wait(); err != nil {
 		return
@@ -153,7 +153,7 @@ func (self *Node) updateRing(gen func(*ring.Ring) *ring.Ring) (err error) {
 	return
 }
 
-func (self *Node) LeaderForward(method string, input interface{}, output interface{}) (forwarded bool, err error) {
+func (self *Peer) LeaderForward(method string, input interface{}, output interface{}) (forwarded bool, err error) {
 	if self.raft.Name() == self.raft.Leader() {
 		return
 	}
@@ -162,15 +162,15 @@ func (self *Node) LeaderForward(method string, input interface{}, output interfa
 	return
 }
 
-func (self *Node) Name() string {
+func (self *Peer) Name() string {
 	return self.raft.Name()
 }
 
-func (self *Node) RaftDo(cmd raft.Command) (result interface{}, err error) {
+func (self *Peer) RaftDo(cmd raft.Command) (result interface{}, err error) {
 	return self.raft.Do(cmd)
 }
 
-func (self *Node) Ring() (result *ring.Ring, err error) {
+func (self *Peer) Ring() (result *ring.Ring, err error) {
 	if err = self.WhileRunning(func() (err error) {
 		result = self.ring
 		return
@@ -180,7 +180,7 @@ func (self *Node) Ring() (result *ring.Ring, err error) {
 	return
 }
 
-func (self *Node) AddPeer(peer *ring.Peer) (err error) {
+func (self *Peer) AddPeer(peer *ring.Peer) (err error) {
 	return self.updateRing(func(r *ring.Ring) (result *ring.Ring) {
 		result = self.ring.Clone()
 		result.AddPeer(peer)
@@ -188,7 +188,7 @@ func (self *Node) AddPeer(peer *ring.Peer) (err error) {
 	})
 }
 
-func (self *Node) RemovePeer(name string) (err error) {
+func (self *Peer) RemovePeer(name string) (err error) {
 	return self.updateRing(func(r *ring.Ring) (result *ring.Ring) {
 		result = self.ring.Clone()
 		result.RemovePeer(name)
@@ -196,7 +196,7 @@ func (self *Node) RemovePeer(name string) (err error) {
 	})
 }
 
-func (self *Node) offer(data [][2][]byte) (err error) {
+func (self *Peer) offer(data [][2][]byte) (err error) {
 	for _, kv := range data {
 		key := kv[0]
 		value := storage.Value(kv[1])
@@ -227,7 +227,7 @@ func (self *Node) offer(data [][2][]byte) (err error) {
 	return
 }
 
-func (self *Node) cleanOnce(stops uint64) (acted bool, err error) {
+func (self *Peer) cleanOnce(stops uint64) (acted bool, err error) {
 	if err = self.WhileRunning(func() (err error) {
 		if atomic.LoadUint64(&self.stops) != stops {
 			return
@@ -279,7 +279,7 @@ func (self *Node) cleanOnce(stops uint64) (acted bool, err error) {
 	return
 }
 
-func (self *Node) cleanAndSync() {
+func (self *Peer) cleanAndSync() {
 	self.maintLock.Lock()
 	defer self.maintLock.Unlock()
 	stops := atomic.LoadUint64(&self.stops)
@@ -304,7 +304,7 @@ func (self *Node) cleanAndSync() {
 	}
 }
 
-func (self *Node) syncOnceWith(i int, stops uint64) (acted bool, err error) {
+func (self *Peer) syncOnceWith(i int, stops uint64) (acted bool, err error) {
 	if err = self.WhileRunning(func() (err error) {
 		if atomic.LoadUint64(&self.stops) != stops {
 			return
@@ -327,11 +327,11 @@ func (self *Node) syncOnceWith(i int, stops uint64) (acted bool, err error) {
 	return
 }
 
-func (self *Node) String() string {
+func (self *Peer) String() string {
 	return self.AsPeer().String()
 }
 
-func (self *Node) AsPeer() (result *ring.Peer) {
+func (self *Peer) AsPeer() (result *ring.Peer) {
 	return &ring.Peer{
 		Name:             self.raft.Name(),
 		Pos:              self.pos,
@@ -339,7 +339,7 @@ func (self *Node) AsPeer() (result *ring.Peer) {
 	}
 }
 
-func (self *Node) selectPos() (err error) {
+func (self *Peer) selectPos() (err error) {
 	if err = self.metadata.Update(func(tx *bolt.Tx) (err error) {
 		bucket, err := tx.CreateBucketIfNotExists(metadataBucketKey)
 		if err != nil {
@@ -359,7 +359,7 @@ func (self *Node) selectPos() (err error) {
 	return
 }
 
-func (self *Node) setupRaft() (err error) {
+func (self *Peer) setupRaft() (err error) {
 	logdir := filepath.Join(self.dir, "raft.log")
 	if err = os.RemoveAll(logdir); err != nil {
 		return
@@ -377,7 +377,7 @@ func (self *Node) setupRaft() (err error) {
 	return
 }
 
-func (self *Node) setupPersistence() (err error) {
+func (self *Peer) setupPersistence() (err error) {
 	if err = os.MkdirAll(self.dir, 0700); err != nil {
 		return
 	}
@@ -390,21 +390,21 @@ func (self *Node) setupPersistence() (err error) {
 	return
 }
 
-func (self *Node) startServing() (err error) {
+func (self *Peer) startServing() (err error) {
 	self.server.Serve("Raft", &raftTransport.RPCServer{
 		Raft: self.raft,
 	})
 	self.server.Serve("Synchronizable", &storageTransport.RPCServer{
 		Storage: self.storage,
 	})
-	self.server.Serve("Node", &nodeTransport.RPCServer{
+	self.server.Serve("Peer", &peerTransport.RPCServer{
 		Controllable: self,
 	})
-	self.transactor = transactor.New(&transactorBackend{node: self})
+	self.transactor = transactor.New(&transactorBackend{peer: self})
 	self.server.Serve("TX", &transactorTransport.RPCServer{
 		Transactor: self.transactor,
 	})
-	self.server.Serve("Debug", &nodeTransport.DebugRPCServer{
+	self.server.Serve("Debug", &peerTransport.DebugRPCServer{
 		Debuggable: self,
 	})
 	if err = self.raft.Start(); err != nil {
@@ -413,7 +413,7 @@ func (self *Node) startServing() (err error) {
 	return
 }
 
-func (self *Node) lead() (err error) {
+func (self *Peer) lead() (err error) {
 	if _, err = self.raft.Do(&raft.DefaultJoinCommand{
 		Name:             self.raft.Name(),
 		ConnectionString: self.server.Addr(),
@@ -425,9 +425,9 @@ func (self *Node) lead() (err error) {
 	return
 }
 
-func (self *Node) join(leader string) (err error) {
-	joinResp := &nodeTransport.JoinResponse{}
-	if err = switchboard.Switch.Call(leader, "Node.Join", &nodeTransport.JoinRequest{
+func (self *Peer) join(leader string) (err error) {
+	joinResp := &peerTransport.JoinResponse{}
+	if err = switchboard.Switch.Call(leader, "Peer.Join", &peerTransport.JoinRequest{
 		RaftJoinCommand: &raft.DefaultJoinCommand{
 			Name:             self.raft.Name(),
 			ConnectionString: self.server.Addr(),
@@ -440,9 +440,9 @@ func (self *Node) join(leader string) (err error) {
 	return
 }
 
-func (self *Node) Start(join string) (err error) {
+func (self *Peer) Start(join string) (err error) {
 	if self.raft != nil {
-		err = fmt.Errorf("Node is already started")
+		err = fmt.Errorf("Peer is already started")
 		return
 	}
 	if err = self.setupPersistence(); err != nil {

@@ -3,7 +3,7 @@ package transport
 import (
 	"github.com/goraft/raft"
 	"github.com/zond/drafty/log"
-	"github.com/zond/drafty/node/ring"
+	"github.com/zond/drafty/peer/ring"
 )
 
 type Debuggable interface {
@@ -72,12 +72,12 @@ func (self *RPCServer) accept(req *JoinRequest) {
 }
 
 func (self *RPCServer) Join(req *JoinRequest, result *JoinResponse) (err error) {
-	forwarded, err := self.Controllable.LeaderForward("Node.Join", req, result)
+	forwarded, err := self.Controllable.LeaderForward("Peer.Join", req, result)
 	if forwarded || err != nil {
 		return
 	}
 	if _, err = self.Controllable.RaftDo(req.RaftJoinCommand); err != nil {
-		log.Warnf("Unable to add new node %v onto raft: %v", req.RaftJoinCommand.Name, err)
+		log.Warnf("Unable to add new peer %v onto raft: %v", req.RaftJoinCommand.Name, err)
 		return
 	}
 	log.Infof("%v accepted %v onto raft", self.Controllable.Name(), req.RaftJoinCommand.Name)

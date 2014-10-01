@@ -1,4 +1,4 @@
-package node
+package peer
 
 import (
 	"encoding/hex"
@@ -9,12 +9,12 @@ import (
 )
 
 type transactorBackend struct {
-	node *Node
+	peer *Peer
 }
 
 func (self *transactorBackend) assertResponsibility(key []byte) (err error) {
-	successors := self.node.ring.Successors(key, common.NBackups+1)
-	if !successors.ContainsPos(self.node.pos) {
+	successors := self.peer.ring.Successors(key, common.NBackups+1)
+	if !successors.ContainsPos(self.peer.pos) {
 		err = fmt.Errorf("%v is not responsible for %v", self, hex.EncodeToString(key))
 		return
 	}
@@ -22,11 +22,11 @@ func (self *transactorBackend) assertResponsibility(key []byte) (err error) {
 }
 
 func (self *transactorBackend) Get(key []byte) (result storage.Value, err error) {
-	if err = self.node.WhileRunning(func() (err error) {
+	if err = self.peer.WhileRunning(func() (err error) {
 		if err = self.assertResponsibility(key); err != nil {
 			return
 		}
-		if result, err = self.node.storage.Get(key); err != nil {
+		if result, err = self.peer.storage.Get(key); err != nil {
 			return
 		}
 		return
