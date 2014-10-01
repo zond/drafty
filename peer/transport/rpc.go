@@ -3,19 +3,17 @@ package transport
 import (
 	"github.com/goraft/raft"
 	"github.com/zond/drafty/log"
+	"github.com/zond/drafty/peer"
+	"github.com/zond/drafty/peer/messages"
 	"github.com/zond/drafty/peer/ring"
 )
 
-type Debuggable interface {
-	Dump() (string, error)
-}
-
 type DebugRPCServer struct {
-	Debuggable Debuggable
+	Peer *peer.Peer
 }
 
 func (self *DebugRPCServer) Dump(a struct{}, b *struct{}) (err error) {
-	log.Debugf(self.Debuggable.Dump())
+	log.Debugf(self.Peer.Dump())
 	return
 }
 
@@ -30,37 +28,30 @@ type Controllable interface {
 }
 
 type RPCServer struct {
-	Controllable Controllable
+	Peer *peer.Peer
 }
 
 func (self *RPCServer) Ring(a struct{}, result *ring.Ring) (err error) {
-	r, err := self.Controllable.Ring()
-	if err != nil {
+	if err = self.Peer.WhileRunning(func() (err error) {
+		r := self.Peer.Ring()
+		*result = *r
+		return
+	}); err != nil {
 		return
 	}
-	*result = *r
 	return
 }
 
 func (self *RPCServer) Stop(a struct{}, b *struct{}) (err error) {
-	return self.Controllable.Stop()
+	return self.Peer.Stop()
 }
 
 func (self *RPCServer) Continue(r *ring.Ring, b *struct{}) (err error) {
-	return self.Controllable.Continue(r)
+	return self.Peer.Continue(r)
 }
 
-type JoinRequest struct {
-	RaftJoinCommand *raft.DefaultJoinCommand
-	Pos             []byte
-}
-
-type JoinResponse struct {
-	Name string
-}
-
-func (self *RPCServer) accept(req *JoinRequest) {
-	if err := self.Controllable.AddPeer(&ring.Peer{
+func (self *RPCServer) accept(req *messages.JoinRequest) {
+	if err := self.Peer.AddPeer(&ring.Peer{
 		Name:             req.RaftJoinCommand.Name,
 		ConnectionString: req.RaftJoinCommand.ConnectionString,
 		Pos:              req.Pos,
@@ -68,22 +59,22 @@ func (self *RPCServer) accept(req *JoinRequest) {
 		log.Errorf("Unable to accept %v into ring: %v", req.RaftJoinCommand.Name, err)
 		return
 	}
-	log.Infof("%v accepted %v into ring", self.Controllable.Name(), req.RaftJoinCommand.Name)
+	log.Infof("%v accepted %v into ring", self.Peer.Name(), req.RaftJoinCommand.Name)
 }
 
-func (self *RPCServer) Join(req *JoinRequest, result *JoinResponse) (err error) {
-	forwarded, err := self.Controllable.LeaderForward("Peer.Join", req, result)
+func (self *RPCServer) Join(req *messages.JoinRequest, result *messages.JoinResponse) (err error) {
+	forwarded, err := self.Peer.LeaderForward("Peer.Join", req, result)
 	if forwarded || err != nil {
 		return
 	}
-	if _, err = self.Controllable.RaftDo(req.RaftJoinCommand); err != nil {
+	if _, err = self.Peer.RaftDo(req.RaftJoinCommand); err != nil {
 		log.Warnf("Unable to add new peer %v onto raft: %v", req.RaftJoinCommand.Name, err)
 		return
 	}
-	log.Infof("%v accepted %v onto raft", self.Controllable.Name(), req.RaftJoinCommand.Name)
+	log.Infof("%v accepted %v onto raft", self.Peer.Name(), req.RaftJoinCommand.Name)
 	go self.accept(req)
-	*result = JoinResponse{
-		Name: self.Controllable.Name(),
+	*result = messages.JoinResponse{
+		Name: self.Peer.Name(),
 	}
 	return
 }

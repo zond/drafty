@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"github.com/zond/drafty/storage"
+	"github.com/zond/drafty/storage/messages"
 	"github.com/zond/drafty/switchboard"
 )
 
@@ -18,13 +19,7 @@ func (self *RPCServer) Hash(a struct{}, result *[]byte) (err error) {
 	return
 }
 
-type PutRequest struct {
-	Logs  string
-	Key   []byte
-	Value []byte
-}
-
-func (self *RPCServer) Put(req *PutRequest, a *struct{}) (err error) {
+func (self *RPCServer) Put(req *messages.PutRequest, a *struct{}) (err error) {
 	return self.Storage.Put(req.Key, req.Value, req.Logs)
 }
 
@@ -37,12 +32,7 @@ func (self *RPCServer) Get(key []byte, result *[]byte) (err error) {
 	return
 }
 
-type HashesRequest struct {
-	Prefix []byte
-	Level  uint
-}
-
-func (self *RPCServer) Hashes(req HashesRequest, result *[256][]byte) (err error) {
+func (self *RPCServer) Hashes(req messages.HashesRequest, result *[256][]byte) (err error) {
 	r, err := self.Storage.Hashes(req.Prefix, req.Level)
 	if err != nil {
 		return
@@ -59,7 +49,7 @@ func (self RPCTransport) Hash() (result []byte, err error) {
 }
 
 func (self RPCTransport) Put(key []byte, value storage.Value, logs string) (err error) {
-	err = switchboard.Switch.Call(string(self), "Synchronizable.Put", &PutRequest{
+	err = switchboard.Switch.Call(string(self), "Synchronizable.Put", &messages.PutRequest{
 		Key:   key,
 		Value: value,
 		Logs:  logs,
@@ -73,7 +63,7 @@ func (self RPCTransport) Get(key []byte) (result storage.Value, err error) {
 }
 
 func (self RPCTransport) Hashes(prefix []byte, level uint) (result [256][]byte, err error) {
-	req := HashesRequest{
+	req := messages.HashesRequest{
 		Prefix: prefix,
 		Level:  level,
 	}

@@ -1,8 +1,8 @@
 package transactor
 
 import (
-	"github.com/zond/drafty/common"
 	"github.com/zond/drafty/storage"
+	"github.com/zond/drafty/transactor/messages"
 )
 
 type Backend interface {
@@ -10,24 +10,24 @@ type Backend interface {
 }
 
 type Transactor struct {
-	Backend Backend
-	txById  map[string]*common.TX
-	urByKey map[string][]*common.TX
-	uwByKey map[string][]*common.TX
+	backend Backend
+	txById  map[string]*messages.TX
+	urByKey map[string][]*messages.TX
+	uwByKey map[string][]*messages.TX
 }
 
 func New(backend Backend) (result *Transactor) {
 	return &Transactor{
-		Backend: backend,
-		txById:  map[string]*common.TX{},
-		urByKey: map[string][]*common.TX{},
-		uwByKey: map[string][]*common.TX{},
+		backend: backend,
+		txById:  map[string]*messages.TX{},
+		urByKey: map[string][]*messages.TX{},
+		uwByKey: map[string][]*messages.TX{},
 	}
 }
 
-func (self *Transactor) Get(tx *common.TX, key []byte) (result *common.TXGetResp, err error) {
+func (self *Transactor) Get(tx *messages.TX, key []byte) (result *messages.TXGetResp, err error) {
 	// load data from storage
-	value, err := self.Backend.Get(key)
+	value, err := self.backend.Get(key)
 	if err != nil {
 		return
 	}
@@ -43,7 +43,7 @@ func (self *Transactor) Get(tx *common.TX, key []byte) (result *common.TXGetResp
 	// place soft read lock
 	self.urByKey[skey] = append(self.urByKey[skey], tx)
 	// create response with value and last write timestamp
-	result = &common.TXGetResp{
+	result = &messages.TXGetResp{
 		Value: value.Bytes(),
 		Wrote: value.WriteTimestamp(),
 	}

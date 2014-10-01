@@ -16,18 +16,18 @@ import (
 	"github.com/goraft/raft"
 	"github.com/zond/drafty/common"
 	"github.com/zond/drafty/log"
+	"github.com/zond/drafty/peer/messages"
 	"github.com/zond/drafty/peer/ring"
-	peerTransport "github.com/zond/drafty/peer/transport"
 	raftTransport "github.com/zond/drafty/raft/transport"
 	"github.com/zond/drafty/storage"
+	storageMessages "github.com/zond/drafty/storage/messages"
 	storageTransport "github.com/zond/drafty/storage/transport"
 	"github.com/zond/drafty/switchboard"
-	"github.com/zond/drafty/transactor"
-	transactorTransport "github.com/zond/drafty/transactor/transport"
 )
 
 const (
 	maintenanceChunkSize = 16
+	NBackups             = 2
 )
 
 func init() {
@@ -38,33 +38,86 @@ var posKey = []byte("pos")
 var metadataBucketKey = []byte("metadata")
 
 type Peer struct {
-	pos        []byte
-	server     *switchboard.Server
-	dir        string
-	raft       raft.Server
-	ring       *ring.Ring
-	transactor *transactor.Transactor
-	stops      uint64
-	stopped    int32
-	stopLock   sync.RWMutex
-	maintLock  sync.Mutex
-	storage    *storage.DB
-	metadata   *bolt.DB
+	pos       []byte
+	dir       string
+	addr      string
+	raft      raft.Server
+	ring      *ring.Ring
+	stops     uint64
+	stopped   int32
+	stopLock  sync.RWMutex
+	maintLock sync.Mutex
+	storage   *storage.DB
+	metadata  *bolt.DB
 }
 
 func New(addr string, dir string) (result *Peer, err error) {
 	result = &Peer{
-		server: switchboard.NewServer(addr),
-		dir:    dir,
-		ring:   ring.New(),
+		dir:  dir,
+		ring: ring.New(),
+		addr: addr,
+	}
+	if err = result.setupPersistence(); err != nil {
+		return
+	}
+	if err = result.selectPos(); err != nil {
+		return
+	}
+	if err = result.setupRaft(); err != nil {
+		return
 	}
 	return
 }
 
-type MultiError []error
+func (self *Peer) setupPersistence() (err error) {
+	if err = os.MkdirAll(self.dir, 0700); err != nil {
+		return
+	}
+	if self.storage, err = storage.New(filepath.Join(self.dir, "storage.db")); err != nil {
+		return
+	}
+	if self.metadata, err = bolt.Open(filepath.Join(self.dir, "metadata.db"), 0700, nil); err != nil {
+		return
+	}
+	return
+}
 
-func (self MultiError) Error() string {
-	return fmt.Sprint([]error(self))
+func (self *Peer) selectPos() (err error) {
+	if err = self.metadata.Update(func(tx *bolt.Tx) (err error) {
+		bucket, err := tx.CreateBucketIfNotExists(metadataBucketKey)
+		if err != nil {
+			return
+		}
+		self.pos = bucket.Get(posKey)
+		if self.pos == nil {
+			self.pos = ring.RandomPos(1)
+			if err = bucket.Put(posKey, self.pos); err != nil {
+				return
+			}
+		}
+		return
+	}); err != nil {
+		return
+	}
+	return
+}
+
+func (self *Peer) setupRaft() (err error) {
+	logdir := filepath.Join(self.dir, "raft.log")
+	if err = os.RemoveAll(logdir); err != nil {
+		return
+	}
+	if err = os.MkdirAll(logdir, 0700); err != nil {
+		return
+	}
+	rpcTransport := &raftTransport.RPCTransport{
+		PeerRemover: self,
+	}
+	if self.raft, err = raft.NewServer(fmt.Sprintf("%08x", rand.Int63()), logdir, rpcTransport, self, self, self.addr); err != nil {
+		return
+	}
+	rpcTransport.Raft = self.raft
+	return
 }
 
 type peerState struct {
@@ -84,6 +137,14 @@ func (self *Peer) Save() (b []byte, err error) {
 	return
 }
 
+func (self *Peer) Storage() *storage.DB {
+	return self.storage
+}
+
+func (self *Peer) Raft() raft.Server {
+	return self.raft
+}
+
 func (self *Peer) Recovery(b []byte) (err error) {
 	log.Debugf("Recovering from log")
 	state := &peerState{}
@@ -93,10 +154,6 @@ func (self *Peer) Recovery(b []byte) (err error) {
 	self.ring = state.Ring
 	atomic.StoreInt32(&self.stopped, state.Stopped)
 	return
-}
-
-func (self *Peer) Addr() string {
-	return self.server.Addr()
 }
 
 func (self *Peer) Stop() (err error) {
@@ -170,13 +227,13 @@ func (self *Peer) RaftDo(cmd raft.Command) (result interface{}, err error) {
 	return self.raft.Do(cmd)
 }
 
-func (self *Peer) Ring() (result *ring.Ring, err error) {
-	if err = self.WhileRunning(func() (err error) {
-		result = self.ring
-		return
-	}); err != nil {
-		return
-	}
+func (self *Peer) Ring() *ring.Ring {
+	return self.ring.Clone()
+}
+
+func (self *Peer) Pos() (result []byte) {
+	result = make([]byte, len(self.pos))
+	copy(result, self.pos)
 	return
 }
 
@@ -201,7 +258,7 @@ func (self *Peer) offer(data [][2][]byte) (err error) {
 		key := kv[0]
 		value := storage.Value(kv[1])
 		vRTS := value.ReadTimestamp()
-		for _, peer := range self.ring.Successors(key, common.NBackups+1) {
+		for _, peer := range self.ring.Successors(key, NBackups+1) {
 			var current []byte
 			if err = peer.Call("Synchronizable.Get", key, &current); err != nil {
 				return
@@ -211,7 +268,7 @@ func (self *Peer) offer(data [][2][]byte) (err error) {
 				curRTS = storage.Value(current).ReadTimestamp()
 			}
 			if vRTS > curRTS {
-				if err = peer.Call("Synchronizable.Put", &storageTransport.PutRequest{
+				if err = peer.Call("Synchronizable.Put", &storageMessages.PutRequest{
 					Logs:  fmt.Sprintf("%v offering to %v", hex.EncodeToString(self.pos), hex.EncodeToString(peer.Pos)),
 					Key:   key,
 					Value: value,
@@ -234,7 +291,7 @@ func (self *Peer) cleanOnce(stops uint64) (acted bool, err error) {
 		}
 		toOffer := [][2][]byte{}
 		var preds ring.Peers
-		preds = self.ring.Predecessors(self.pos, common.NBackups+1)
+		preds = self.ring.Predecessors(self.pos, NBackups+1)
 		ranges := storage.Ranges{}
 		for i := 0; i < len(preds)-1; i++ {
 			ranges = append(ranges, storage.Range{
@@ -293,7 +350,7 @@ func (self *Peer) cleanAndSync() {
 	anyAction := true
 	for anyAction && atomic.LoadUint64(&self.stops) == stops {
 		anyAction = false
-		for i := 0; i < common.NBackups; i++ {
+		for i := 0; i < NBackups; i++ {
 			for acted, err = self.syncOnceWith(i, stops); err == nil && acted && atomic.LoadUint64(&self.stops) == stops; acted, err = self.syncOnceWith(i, stops) {
 				anyAction = true
 			}
@@ -313,7 +370,7 @@ func (self *Peer) syncOnceWith(i int, stops uint64) (acted bool, err error) {
 			FromInc: self.ring.Predecessors(self.pos, 1)[0].Pos,
 			ToExc:   self.pos,
 		}
-		peer := self.ring.Successors(self.pos, common.NBackups)[i]
+		peer := self.ring.Successors(self.pos, NBackups)[i]
 		ops, err := self.storage.Sync(storageTransport.RPCTransport(peer.ConnectionString), r, maintenanceChunkSize, fmt.Sprintf("%v syncing with %v", hex.EncodeToString(self.pos), hex.EncodeToString(peer.Pos)))
 		if err != nil {
 			return
@@ -335,88 +392,14 @@ func (self *Peer) AsPeer() (result *ring.Peer) {
 	return &ring.Peer{
 		Name:             self.raft.Name(),
 		Pos:              self.pos,
-		ConnectionString: self.server.Addr(),
+		ConnectionString: self.addr,
 	}
-}
-
-func (self *Peer) selectPos() (err error) {
-	if err = self.metadata.Update(func(tx *bolt.Tx) (err error) {
-		bucket, err := tx.CreateBucketIfNotExists(metadataBucketKey)
-		if err != nil {
-			return
-		}
-		self.pos = bucket.Get(posKey)
-		if self.pos == nil {
-			self.pos = ring.RandomPos(1)
-			if err = bucket.Put(posKey, self.pos); err != nil {
-				return
-			}
-		}
-		return
-	}); err != nil {
-		return
-	}
-	return
-}
-
-func (self *Peer) setupRaft() (err error) {
-	logdir := filepath.Join(self.dir, "raft.log")
-	if err = os.RemoveAll(logdir); err != nil {
-		return
-	}
-	if err = os.MkdirAll(logdir, 0700); err != nil {
-		return
-	}
-	rpcTransport := &raftTransport.RPCTransport{
-		PeerRemover: self,
-	}
-	if self.raft, err = raft.NewServer(fmt.Sprintf("%08x", rand.Int63()), logdir, rpcTransport, self, self, self.server.Addr()); err != nil {
-		return
-	}
-	rpcTransport.Raft = self.raft
-	return
-}
-
-func (self *Peer) setupPersistence() (err error) {
-	if err = os.MkdirAll(self.dir, 0700); err != nil {
-		return
-	}
-	if self.storage, err = storage.New(filepath.Join(self.dir, "storage.db")); err != nil {
-		return
-	}
-	if self.metadata, err = bolt.Open(filepath.Join(self.dir, "metadata.db"), 0700, nil); err != nil {
-		return
-	}
-	return
-}
-
-func (self *Peer) startServing() (err error) {
-	self.server.Serve("Raft", &raftTransport.RPCServer{
-		Raft: self.raft,
-	})
-	self.server.Serve("Synchronizable", &storageTransport.RPCServer{
-		Storage: self.storage,
-	})
-	self.server.Serve("Peer", &peerTransport.RPCServer{
-		Controllable: self,
-	})
-	self.transactor = transactor.New(&transactorBackend{peer: self})
-	self.server.Serve("TX", &transactorTransport.RPCServer{
-		Transactor: self.transactor,
-	})
-	self.server.Serve("Debug", &peerTransport.DebugRPCServer{
-		Debuggable: self,
-	})
-	if err = self.raft.Start(); err != nil {
-		return
-	}
-	return
 }
 
 func (self *Peer) lead() (err error) {
 	if _, err = self.raft.Do(&raft.DefaultJoinCommand{
 		Name:             self.raft.Name(),
-		ConnectionString: self.server.Addr(),
+		ConnectionString: self.addr,
 	}); err != nil {
 		return
 	}
@@ -426,11 +409,11 @@ func (self *Peer) lead() (err error) {
 }
 
 func (self *Peer) join(leader string) (err error) {
-	joinResp := &peerTransport.JoinResponse{}
-	if err = switchboard.Switch.Call(leader, "Peer.Join", &peerTransport.JoinRequest{
+	joinResp := &messages.JoinResponse{}
+	if err = switchboard.Switch.Call(leader, "Peer.Join", &messages.JoinRequest{
 		RaftJoinCommand: &raft.DefaultJoinCommand{
 			Name:             self.raft.Name(),
-			ConnectionString: self.server.Addr(),
+			ConnectionString: self.addr,
 		},
 		Pos: self.pos,
 	}, joinResp); err != nil {
@@ -441,20 +424,7 @@ func (self *Peer) join(leader string) (err error) {
 }
 
 func (self *Peer) Start(join string) (err error) {
-	if self.raft != nil {
-		err = fmt.Errorf("Peer is already started")
-		return
-	}
-	if err = self.setupPersistence(); err != nil {
-		return
-	}
-	if err = self.selectPos(); err != nil {
-		return
-	}
-	if err = self.setupRaft(); err != nil {
-		return
-	}
-	if err = self.startServing(); err != nil {
+	if err = self.raft.Start(); err != nil {
 		return
 	}
 	if join == "" {

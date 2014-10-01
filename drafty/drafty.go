@@ -2,10 +2,9 @@ package main
 
 import (
 	"flag"
+	"github.com/zond/drafty/node"
 	"os"
 	"path/filepath"
-
-	"github.com/zond/drafty/peer"
 )
 
 func main() {
@@ -19,7 +18,7 @@ func main() {
 
 	flag.Parse()
 
-	n, err := peer.New(*addr, *dir)
+	n, err := node.New(*addr, *dir)
 	if err != nil {
 		panic(err)
 	}

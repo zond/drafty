@@ -1,4 +1,4 @@
-package peer
+package node
 
 import (
 	"bytes"
@@ -30,19 +30,19 @@ func init() {
 	}
 }
 
-func withPeer(t *testing.T, f func(*Peer)) {
+func withNode(t *testing.T, f func(*Node)) {
 	dirname := fmt.Sprintf("test-%v", rand.Int63())
-	peer, err := New(fmt.Sprintf("127.0.0.1:%v", nextPort), dirname)
+	node, err := New(fmt.Sprintf("127.0.0.1:%v", nextPort), dirname)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
 	defer func() {
-		if err := peer.Stop(); err != nil {
+		if err := node.Stop(); err != nil {
 			t.Errorf("%v", err)
 		}
 	}()
 	nextPort += 1
-	f(peer)
+	f(node)
 }
 
 type output struct {
@@ -99,36 +99,36 @@ func assertWithin(t *testing.T, d time.Duration, f func(*failer)) {
 	}
 }
 
-func assertRing(t *testing.T, n *Peer, r *ring.Ring) {
+func assertRing(t *testing.T, n *Node, r *ring.Ring) {
 	assertWithin(t, time.Second*2, func(f *failer) {
-		n.WhileRunning(func() (err error) {
-			if !n.ring.Equal(r) {
-				f.Fatalf("Wrong ring, wanted %v to have %v but it has %v", n, r, n.ring)
+		n.peer.WhileRunning(func() (err error) {
+			if !n.peer.Ring().Equal(r) {
+				f.Fatalf("Wrong ring, wanted %v to have %v but it has %v", n, r, n.peer.Ring())
 			}
 			return
 		})
 	})
 }
 
-type peers []*Peer
+type nodes []*Node
 
-func (self peers) Len() int {
+func (self nodes) Len() int {
 	return len(self)
 }
 
-func (self peers) Less(i, j int) bool {
-	return bytes.Compare(self[i].pos, self[j].pos) < 0
+func (self nodes) Less(i, j int) bool {
+	return bytes.Compare(self[i].peer.Pos(), self[j].peer.Pos()) < 0
 }
 
-func (self peers) Swap(i, j int) {
+func (self nodes) Swap(i, j int) {
 	self[i], self[j] = self[j], self[i]
 }
 
-func withCluster(t *testing.T, f func(*ring.Ring, []*Peer), prep func(*Peer, int)) {
-	withPeer(t, func(n1 *Peer) {
-		withPeer(t, func(n2 *Peer) {
-			withPeer(t, func(n3 *Peer) {
-				withPeer(t, func(n4 *Peer) {
+func withCluster(t *testing.T, f func(*ring.Ring, []*Node), prep func(*Node, int)) {
+	withNode(t, func(n1 *Node) {
+		withNode(t, func(n2 *Node) {
+			withNode(t, func(n3 *Node) {
+				withNode(t, func(n4 *Node) {
 					n1.Start("")
 					if prep != nil {
 						prep(n1, 0)
@@ -146,10 +146,10 @@ func withCluster(t *testing.T, f func(*ring.Ring, []*Peer), prep func(*Peer, int
 						prep(n4, 3)
 					}
 					r := ring.New()
-					r.AddPeer(n1.AsPeer())
-					r.AddPeer(n2.AsPeer())
-					r.AddPeer(n3.AsPeer())
-					r.AddPeer(n4.AsPeer())
+					r.AddPeer(n1.peer.AsPeer())
+					r.AddPeer(n2.peer.AsPeer())
+					r.AddPeer(n3.peer.AsPeer())
+					r.AddPeer(n4.peer.AsPeer())
 					n := peers{
 						n1, n2, n3, n4,
 					}
@@ -163,7 +163,7 @@ func withCluster(t *testing.T, f func(*ring.Ring, []*Peer), prep func(*Peer, int
 
 func TestJoining(t *testing.T) {
 	log.Level = log.Warn
-	withCluster(t, func(r *ring.Ring, n []*Peer) {
+	withCluster(t, func(r *ring.Ring, n []*Node) {
 		assertRing(t, n[0], r)
 		assertRing(t, n[1], r)
 		assertRing(t, n[2], r)
@@ -177,36 +177,36 @@ func TestSyncAndClean(t *testing.T) {
 	val[17] = 1
 	keys := [][][]byte{}
 	for n := 0; n < 3; n++ {
-		peerKeys := [][]byte{}
+		nodeKeys := [][]byte{}
 		for i := 0; i < 100; i++ {
-			peerKeys = append(peerKeys, ring.RandomPos(2))
+			nodeKeys = append(nodeKeys, ring.RandomPos(2))
 		}
-		keys = append(keys, peerKeys)
+		keys = append(keys, nodeKeys)
 	}
-	withCluster(t, func(r *ring.Ring, n []*Peer) {
+	withCluster(t, func(r *ring.Ring, n []*Node) {
 		assertWithin(t, time.Second*5, func(f *failer) {
 			for _, keyset := range keys {
 				for _, key := range keyset {
 					successors := r.Successors(key, common.NBackups+1)
-					for _, peer := range n {
-						v, err := peer.storage.Get(key)
+					for _, node := range n {
+						v, err := node.storage.Get(key)
 						if err != nil {
-							f.Fatalf("Unable to load %v from %v: %v", key, peer, err)
+							f.Fatalf("Unable to load %v from %v: %v", key, node, err)
 						}
-						if successors.ContainsPos(peer.pos) {
+						if successors.ContainsPos(node.pos) {
 							if bytes.Compare(val, v) != 0 {
-								f.Errorf("Wrong value for %v %v in %v: %v", r, hex.EncodeToString(key), hex.EncodeToString(peer.pos), v)
+								f.Errorf("Wrong value for %v %v in %v: %v", r, hex.EncodeToString(key), hex.EncodeToString(node.pos), v)
 							}
 						} else {
 							if v != nil {
-								f.Errorf("Wrong value for %v %v in %v: %v", r, hex.EncodeToString(key), hex.EncodeToString(peer.pos), v)
+								f.Errorf("Wrong value for %v %v in %v: %v", r, hex.EncodeToString(key), hex.EncodeToString(node.pos), v)
 							}
 						}
 					}
 				}
 			}
 		})
-	}, func(n *Peer, i int) {
+	}, func(n *Node, i int) {
 		if i < 3 {
 			for _, key := range keys[i] {
 				if err := n.storage.Put(key, val, fmt.Sprintf("test setup of %v", hex.EncodeToString(n.pos))); err != nil {
