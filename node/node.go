@@ -384,7 +384,6 @@ func (self *Node) setupPersistence() (err error) {
 	if self.storage, err = storage.New(filepath.Join(self.dir, "storage.db")); err != nil {
 		return
 	}
-	self.transactor = transactor.New(&transactorBackend{node: self})
 	if self.metadata, err = bolt.Open(filepath.Join(self.dir, "metadata.db"), 0700, nil); err != nil {
 		return
 	}
@@ -401,6 +400,7 @@ func (self *Node) startServing() (err error) {
 	self.server.Serve("Node", &nodeTransport.RPCServer{
 		Controllable: self,
 	})
+	self.transactor = transactor.New(&transactorBackend{node: self})
 	self.server.Serve("TX", &transactorTransport.RPCServer{
 		Transactor: self.transactor,
 	})
