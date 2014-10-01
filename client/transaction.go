@@ -5,6 +5,7 @@ import (
 	"log"
 	"sync"
 
+	"github.com/zond/drafty/common"
 	"github.com/zond/drafty/peer/ring"
 	"github.com/zond/drafty/transactor/messages"
 )
@@ -112,5 +113,23 @@ func (self *TX) Get(key []byte) (result []byte, err error) {
 }
 
 func (self *TX) preWriteAndValidate() (err error) {
+	p := &common.Parallelizer{}
+	for _owner, _nodeMeta := range self.metaByNode {
+		nodeMeta := _nodeMeta
+		owner := _owner
+		p.Start(func() (err error) {
+			peer, found := self.ring.ByName(owner)
+			if !found {
+				log.Fatalf("Unable to find peer %v, mentioned in metaByNode, in the ring?", peer)
+			}
+			if err = peer.Call("TX.PrewriteAndValidate", nodeMeta, nil); err != nil {
+				return
+			}
+			return
+		})
+	}
+	if err = p.Wait(); err != nil {
+		return
+	}
 	return
 }

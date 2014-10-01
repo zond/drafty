@@ -17,3 +17,7 @@ func (self *RPCServer) Get(req *messages.GetRequest, resp *messages.Value) (err 
 	*resp = *r
 	return
 }
+
+func (self *RPCServer) PrewriteAndValidate(req *messages.NodeMeta, resp *struct{}) (err error) {
+	return
+}
