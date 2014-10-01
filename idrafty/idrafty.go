@@ -50,7 +50,7 @@ var commands = map[string]func() error{
 	},
 	debugDump: func() (err error) {
 		r := &ring.Ring{}
-		if err = switchboard.Switch.Call(*host, "Node.GetRing", struct{}{}, r); err != nil {
+		if err = switchboard.Switch.Call(*host, "Node.Ring", struct{}{}, r); err != nil {
 			return
 		}
 		r.Each(func(p *ring.Peer) {
