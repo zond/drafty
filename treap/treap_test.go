@@ -2,10 +2,18 @@ package treap
 
 import (
 	"bytes"
+	"encoding/binary"
+	"encoding/gob"
 	"fmt"
+	"math/rand"
 	"reflect"
 	"testing"
+	"time"
 )
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
 
 func assertMappness(t *testing.T, treap *Treap, m map[string][]byte) {
 	if !reflect.DeepEqual(treap.ToMap(), m) {
@@ -13,6 +21,28 @@ func assertMappness(t *testing.T, treap *Treap, m map[string][]byte) {
 	}
 	if treap.Size != len(m) {
 		t.Errorf("%v.Size() should be %v", treap, len(m))
+	}
+}
+
+func TestTreapMarshalling(t *testing.T) {
+	t1 := &Treap{}
+	for i := 0; i < 10000; i++ {
+		key := make([]byte, binary.MaxVarintLen64)
+		value := make([]byte, binary.MaxVarintLen64)
+		key = key[:binary.PutVarint(key, rand.Int63())]
+		value = value[:binary.PutVarint(value, rand.Int63())]
+		t1.Put(key, value)
+	}
+	t2 := &Treap{}
+	buf := &bytes.Buffer{}
+	if err := gob.NewEncoder(buf).Encode(t1); err != nil {
+		t.Fatalf("%v", err)
+	}
+	if err := gob.NewDecoder(buf).Decode(t2); err != nil {
+		t.Fatalf("%v", err)
+	}
+	if !reflect.DeepEqual(t1, t2) {
+		t.Errorf("Not equal!")
 	}
 }
 
