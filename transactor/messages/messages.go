@@ -1,7 +1,5 @@
 package messages
 
-import "time"
-
 type TXState int
 
 const (
@@ -9,24 +7,26 @@ const (
 )
 
 type GetRequest struct {
-	TX  *TX
+	TX  []byte
 	Key []byte
 }
 
 type TX struct {
-	Id    []byte
-	Lower *time.Time
-	Upper *time.Time
-	State TXState
+	Id []byte
 }
 
-type Value struct {
-	Data           []byte
+type ValueMeta struct {
 	UW             [][]byte
 	WriteTimestamp int64
 	ReadTimestamp  int64
 }
 
+type Value struct {
+	Data []byte
+	Meta *ValueMeta
+}
+
 type NodeMeta struct {
+	Meta   map[string]*ValueMeta
 	Values map[string]*Value
 }

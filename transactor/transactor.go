@@ -25,36 +25,58 @@ func New(backend Backend) (result *Transactor) {
 	}
 }
 
-func (self *Transactor) Get(tx *messages.TX, key []byte) (result *messages.Value, err error) {
-	// load data from storage
+func (self *Transactor) getTX(id string) (result *messages.TX) {
+	result, found := self.txById[id]
+	if !found {
+		result = &messages.TX{}
+		self.txById[id] = result
+	}
+	return
+}
+
+func (self *Transactor) getUxByKey(m map[string]map[string]*messages.TX, key string) (result map[string]*messages.TX) {
+	result, found := m[key]
+	if !found {
+		result = map[string]*messages.TX{}
+		m[key] = result
+	}
+	return
+}
+
+func (self *Transactor) getUWByKey(key string) (result map[string]*messages.TX) {
+	return self.getUxByKey(self.urByKey, key)
+}
+
+func (self *Transactor) getURByKey(key string) (result map[string]*messages.TX) {
+	return self.getUxByKey(self.uwByKey, key)
+}
+
+func (self *Transactor) Get(txid []byte, key []byte) (result *messages.Value, err error) {
+	txsid := string(txid)
+	tx := self.getTX(txsid)
 	value, err := self.backend.Get(key)
 	if err != nil {
 		return
 	}
-	// ensure tx exists here
-	txsid := string(tx.Id)
-	oldTx, found := self.txById[txsid]
-	if found {
-		tx = oldTx
-	} else {
-		self.txById[txsid] = tx
-	}
-	// ensure soft read lock
 	skey := string(key)
-	oldURs, found := self.urByKey[skey]
-	if !found {
-		oldURs = map[string]*messages.TX{}
-		self.urByKey[skey] = oldURs
-	}
-	oldURs[txsid] = tx
-	// create response with value and last write timestamp
+	self.getURByKey(skey)[txsid] = tx
 	result = &messages.Value{
-		Data:           value.Bytes(),
-		WriteTimestamp: value.WriteTimestamp(),
+		Data: value.Bytes(),
+		Meta: &messages.ValueMeta{
+			WriteTimestamp: value.WriteTimestamp(),
+			RO:             true,
+		},
 	}
-	// append ids of all soft write locks to result
 	for _, uw := range self.uwByKey[skey] {
-		result.UW = append(result.UW, uw.Id)
+		result.Meta.UW = append(result.Meta.UW, uw.Id)
 	}
+	return
+}
+
+func (self *Transactor) PrewriteAndValidate(txid []byte, valueMeta map[string]*messages.ValueMeta) (err error) {
+	txsid := string(txid)
+	tx := self.getTX(txsid)
+	skey := string(key)
+	self.getUWByKey(skey)[txsid] = tx
 	return
 }
