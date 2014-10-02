@@ -18,8 +18,8 @@ func (self *RPCServer) Get(req *messages.GetRequest, resp *messages.Value) (err 
 	return
 }
 
-func (self *RPCServer) PrewriteAndValidate(meta map[string]*messages.ValueMeta, resp *struct{}) (err error) {
-	if err = self.Transactor.PrewriteAndValidate(meta); err != nil {
+func (self *RPCServer) PrewriteAndValidate(req *messages.PrewriteAndValidateRequest, resp *struct{}) (err error) {
+	if err = self.Transactor.PrewriteAndValidate(req.TX, req.ValueContexts); err != nil {
 		return
 	}
 	return

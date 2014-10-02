@@ -1,25 +1,20 @@
 package client
 
 import (
-	"encoding/hex"
 	"log"
 	"sync"
 
 	"github.com/zond/drafty/common"
 	"github.com/zond/drafty/peer/ring"
 	"github.com/zond/drafty/transactor/messages"
+	"github.com/zond/drafty/treap"
 )
-
-type buffer struct {
-	data     map[string]*messages.Value
-	nodeMeta map[string]*messages.NodeMeta
-}
 
 type TX struct {
 	*messages.TX
 	ring   *ring.Ring
-	writes *buffer
-	reads  *buffer
+	buffer *treap.Treap
+	meta   map[string]*messages.NodeContext
 	lock   sync.Mutex
 }
 
@@ -28,15 +23,9 @@ func newTX(r *ring.Ring) (result *TX) {
 		TX: &messages.TX{
 			Id: ring.RandomPos(4),
 		},
-		ring: r.Clone(),
-		reads: &buffer{
-			data:     map[string]*messages.Value{},
-			nodeMeta: map[string]*messages.NodeMeta{},
-		},
-		writes: &buffer{
-			data:     map[string]*messages.Value{},
-			nodeMeta: map[string]*messages.NodeMeta{},
-		},
+		ring:   r.Clone(),
+		buffer: &treap.Treap{},
+		meta:   map[string]*messages.NodeContext{},
 	}
 	return
 }
@@ -55,64 +44,19 @@ func (self *TX) Abort() {
 	defer self.lock.Unlock()
 }
 
-func (self *TX) getNodeMeta(b *buffer, key []byte) (result *messages.NodeMeta) {
-	owner := self.ring.Successors(key, 1)[0]
-	result, found := b.nodeMeta[owner.Name]
-	if !found {
-		result = &messages.NodeMeta{
-			Values: map[string]*messages.Value{},
-			Meta:   map[string]*messages.ValueMeta{},
-		}
-		b.nodeMeta[owner.Name] = result
-	}
-	return
-}
-
-func (self *TX) cache(key []byte, value *messages.Value) {
-	nodeMeta := self.getNodeMeta(self.reads, key)
+func (self *TX) write(key []byte, value []byte) {
+	self.buffer.Put(key, value)
+	nodeContext := self.getNodeContext(key)
 	skey := string(key)
-	if oldValue, found := self.reads.data[skey]; found {
-		oldValue.Data = value.Data
-	} else {
-		self.reads.data[skey] = value
-		if _, found = nodeMeta.Values[skey]; found {
-			log.Fatalf("Found %v in nodeMeta, but not in buffer?!?!", hex.EncodeToString(key))
-		}
-		nodeMeta.Values[skey] = value
-		nodeMeta.Meta[skey] = value.Meta
-	}
-}
-
-func (self *TX) lookup(key string) (result []byte, found bool) {
-	v, found := self.writes.data[key]
+	v, found := nodeContext.Values[skey]
 	if found {
-		result = v.Data
+		v.Context.RW = true
 		return
 	}
-	v, found = self.reads.data[key]
-	if found {
-		result = v.Data
-		return
-	}
-	return
-}
-
-func (self *TX) write(key []byte, data []byte) {
-	nodeMeta := self.getNodeMeta(self.writes, key)
-	skey := string(key)
-	value, found := self.writes.data[skey]
-	if !found {
-		value = &messages.Value{
-			Meta: &messages.ValueMeta{},
-		}
-		self.writes.data[skey] = value
-		if _, found = nodeMeta.Values[skey]; found {
-			log.Fatalf("Found %v in nodeMeta, but not in buffer?!?!", hex.EncodeToString(key))
-		}
-		nodeMeta.Values[skey] = value
-		nodeMeta.Meta[skey] = value.Meta
-	}
-	value.Data = data
+	v = messages.NewValue()
+	v.Data = value
+	nodeContext.Values[skey] = v
+	nodeContext.ValueContexts[skey] = v.Context
 }
 
 func (self *TX) Put(key []byte, value []byte) {
@@ -122,17 +66,38 @@ func (self *TX) Put(key []byte, value []byte) {
 	return
 }
 
+func (self *TX) getNodeContext(key []byte) (result *messages.NodeContext) {
+	successor := self.ring.Successors(key, 1)[0]
+	result, found := self.meta[successor.Name]
+	if found {
+		return
+	}
+	result = messages.NewNodeContext()
+	self.meta[successor.Name] = result
+	return
+}
+
+func (self *TX) cache(key []byte, value *messages.Value) {
+	self.buffer.Put(key, value.Data)
+	nodeContext := self.getNodeContext(key)
+	skey := string(key)
+	nodeContext.Values[skey] = value
+	nodeContext.ValueContexts[skey] = value.Context
+}
+
 func (self *TX) Get(key []byte) (result []byte, err error) {
 	self.lock.Lock()
 	defer self.lock.Unlock()
-	skey := string(key)
-	result, found := self.lookup(skey)
+	result, found := self.buffer.Get(key)
 	if found {
 		return
 	}
 	owner := self.ring.Successors(key, 1)[0]
 	value := &messages.Value{}
-	if err = owner.Call("TX.Get", &messages.GetRequest{TX: self.TX.Id, Key: key}, value); err != nil {
+	if err = owner.Call("TX.Get", &messages.GetRequest{
+		TX:  self.TX.Id,
+		Key: key,
+	}, value); err != nil {
 		return
 	}
 	self.cache(key, value)
@@ -142,15 +107,18 @@ func (self *TX) Get(key []byte) (result []byte, err error) {
 
 func (self *TX) preWriteAndValidate() (err error) {
 	p := &common.Parallelizer{}
-	for _owner, _nodeMeta := range self.reads.nodeMeta {
-		nodeMeta := _nodeMeta
+	for _owner, _nodeContext := range self.meta {
+		nodeContext := _nodeContext
 		owner := _owner
 		p.Start(func() (err error) {
 			peer, found := self.ring.ByName(owner)
 			if !found {
-				log.Fatalf("Unable to find peer %v, mentioned in metaByNode, in the ring?", peer)
+				log.Fatalf("Unable to find peer %v, mentioned in meta, in the ring?", peer)
 			}
-			if err = peer.Call("TX.PrewriteAndValidate", nodeMeta.Meta, nil); err != nil {
+			if err = peer.Call("TX.PrewriteAndValidate", &messages.PrewriteAndValidateRequest{
+				TX:            self.TX.Id,
+				ValueContexts: nodeMeta.ValueContexts,
+			}, nil); err != nil {
 				return
 			}
 			return

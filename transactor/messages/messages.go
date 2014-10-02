@@ -11,22 +11,46 @@ type GetRequest struct {
 	Key []byte
 }
 
+type PrewriteAndValidateRequest struct {
+	TX            []byte
+	ValueContexts map[string]*ValueContext
+}
+
 type TX struct {
 	Id []byte
 }
 
-type ValueMeta struct {
-	UW             [][]byte
+type ValueContext struct {
+	RW             bool
+	UW             map[string]struct{}
+	UR             map[string]struct{}
 	WriteTimestamp int64
 	ReadTimestamp  int64
 }
 
 type Value struct {
-	Data []byte
-	Meta *ValueMeta
+	Context *ValueContext
+	Data    []byte
 }
 
-type NodeMeta struct {
-	Meta   map[string]*ValueMeta
-	Values map[string]*Value
+func NewValue() (result *Value) {
+	return &Value{
+		Context: &ValueContext{
+			UW: map[string]struct{}{},
+			UR: map[string]struct{}{},
+		},
+	}
+}
+
+type NodeContext struct {
+	ValueContexts map[string]*ValueContext
+	Values        map[string]*Value
+}
+
+func NewNodeContext() (result *NodeContext) {
+	result = &NodeContext{
+		ValueContexts: map[string]*ValueContext{},
+		Values:        map[string]*Value{},
+	}
+	return
 }

@@ -1,6 +1,8 @@
 package transactor
 
 import (
+	"bytes"
+
 	"github.com/zond/drafty/storage"
 	"github.com/zond/drafty/transactor/messages"
 )
@@ -43,12 +45,12 @@ func (self *Transactor) getUxByKey(m map[string]map[string]*messages.TX, key str
 	return
 }
 
-func (self *Transactor) getUWByKey(key string) (result map[string]*messages.TX) {
-	return self.getUxByKey(self.urByKey, key)
-}
-
-func (self *Transactor) getURByKey(key string) (result map[string]*messages.TX) {
-	return self.getUxByKey(self.uwByKey, key)
+func (self *Transactor) addUx(src map[string]map[string]*messages.TX, dst map[string]struct{}, skey string, avoidId []byte) {
+	for _, tx := range src[skey] {
+		if bytes.Compare(tx.Id, avoidId) != 0 {
+			dst[string(tx.Id)] = struct{}{}
+		}
+	}
 }
 
 func (self *Transactor) Get(txid []byte, key []byte) (result *messages.Value, err error) {
@@ -59,24 +61,30 @@ func (self *Transactor) Get(txid []byte, key []byte) (result *messages.Value, er
 		return
 	}
 	skey := string(key)
-	self.getURByKey(skey)[txsid] = tx
+	self.getUxByKey(self.urByKey, skey)[txsid] = tx
 	result = &messages.Value{
 		Data: value.Bytes(),
-		Meta: &messages.ValueMeta{
+		Context: &messages.ValueContext{
 			WriteTimestamp: value.WriteTimestamp(),
-			RO:             true,
 		},
 	}
-	for _, uw := range self.uwByKey[skey] {
-		result.Meta.UW = append(result.Meta.UW, uw.Id)
-	}
+	self.addUx(self.uwByKey, result.Context.UW, skey, txid)
 	return
 }
 
-func (self *Transactor) PrewriteAndValidate(txid []byte, valueMeta map[string]*messages.ValueMeta) (err error) {
+func (self *Transactor) PrewriteAndValidate(txid []byte, valueContexts map[string]*messages.ValueContext) (err error) {
 	txsid := string(txid)
 	tx := self.getTX(txsid)
-	skey := string(key)
-	self.getUWByKey(skey)[txsid] = tx
+	for skey, valueContext := range valueContexts {
+		key := []byte(skey)
+		var value storage.Value
+		if value, err = self.backend.Get(key); err != nil {
+			return
+		}
+		valueContext.ReadTimestamp = value.ReadTimestamp()
+		self.getUxByKey(self.uwByKey, skey)[txsid] = tx
+		self.addUx(self.urByKey, valueContext.UR, skey, txid)
+		self.addUx(self.uwByKey, valueContext.UW, skey, txid)
+	}
 	return
 }
