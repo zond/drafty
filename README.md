@@ -42,7 +42,7 @@ Notes
   * All the parts http://www.vldb.org/pvldb/vol7/p329-mahmoud.pdf that mention `collects the transaction IDs of all transactions with soft read locks on y` and such need to be modified to `collects the transactionIDs of all transactions with soft read locks on ranges overlapping y`.
 * To make sure nodes joining the cluster get the data they need to be responsible for, or nodes that get new responsibilites as nodes leave the cluster have the data they need, the cluster will start clean and synchronize operations every time it restarts.
  * A clean operation will go through the data of the node, from the node id and upwards (overflowing to start from the beginning if needed), until it hits the id of the `NBackups+2`'th predecessor of the node, and try to write the data it finds to each node the data actually belongs to.
-  * Whenever a write is successful, the data will be removed from the cleaning node.
+   * Whenever a write is successful, the data will be removed from the cleaning node.
  * A synchronize operation will make sure that each `NBackups` node succeeding the synchronizing node in the cluster has the same data between the predecessor of the node and the node.
-  * To ensure this without going through and comparing each value between predecessor and synchronizing node all nodes keep a merkle tree for their data, which ensures a synchronization that is O(ln(n)+m) where n is the number of keys the synchronizing node owns and m is the number of keys that need to be synchronized.
+   * To ensure this without going through and comparing each value between predecessor and synchronizing node all nodes keep a merkle tree for their data, which ensures a synchronization that is O(ln(n)+m) where n is the number of keys the synchronizing node owns and m is the number of keys that need to be synchronized.
 
