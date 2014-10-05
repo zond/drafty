@@ -39,7 +39,7 @@ Notes
 	 * To avoid doing that, new range lookups will only perform the parts that don't overlap with already cached ranges.
 	 * To simplify returning consistent results with the above requirements, the final result of any range lookup will be fetched from the cache produced by the actual cluster range lookups.
 	 * To enable this, the cache will be sorted. 
-	* All the parts http://www.vldb.org/pvldb/vol7/p329-mahmoud.pdf that mention `collects the transaction IDs of all transactions with soft read locks on y` and such need to be modified to `collects the transactionIDs of all transactions with soft read locks on ranges overlapping y`.
+  * All the parts http://www.vldb.org/pvldb/vol7/p329-mahmoud.pdf that mention `collects the transaction IDs of all transactions with soft read locks on y` and such need to be modified to `collects the transactionIDs of all transactions with soft read locks on ranges overlapping y`.
 * To make sure nodes joining the cluster get the data they need to be responsible for, or nodes that get new responsibilites as nodes leave the cluster have the data they need, the cluster will start clean and synchronize operations every time it restarts.
  * A clean operation will go through the data of the node, from the node id and upwards, until it hits the id of the NBackups+2'th predecessor of the node, and try to write the data it finds to each node the data actually belongs to.
   * Whenever a write is successful, the data will be removed from the cleaning node.
