@@ -19,7 +19,7 @@ Notes
 * The cluster must always be fully functional as long as no NBackups+1 nodes in a sequence disappear.
  * Thus, data must be present on NBackups+1 nodes succeeding its key in the namespace.
  * To simplify this in a transaction context, the client itself will be responsible for including all NBackups+1 nodes succeding the key in any transaction involving key.
-  * Since the client is never trustworthy, and data consistency depend on at least one of the responsible nodes being involved in each transaction involving a key, all nodes must at all times be in consensus regarding the cluster roster.
+  * Since data consistency depend on at least one of the responsible nodes being involved in each transaction involving a key, all nodes must at all times be in consensus regarding the cluster roster.
 	 * To ensure this, a cluster always has a raft layer with a leader.
 	  * The leader is the only node that can accept or kick nodes.
 		* Before the leader accepts or kicks a node, it will stop the cluster.
