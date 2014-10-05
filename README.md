@@ -19,14 +19,14 @@ Notes
 * The cluster must always be fully functional as long as no NBackups+1 nodes in a sequence disappear.
  * Thus, data must be present on NBackups+1 nodes succeeding its key in the namespace.
  * To simplify this in a transaction context, the client itself will be responsible for including all NBackups+1 nodes succeding the key in any transaction involving key.
-  * Since data consistency depend on at least one of the responsible nodes being involved in each transaction involving a key, all nodes must at all times be in consensus regarding the cluster roster.
-	 * To ensure this, a cluster always has a raft layer with a leader.
-	  * The leader is the only node that can accept or kick nodes.
-		* Before the leader accepts or kicks a node, it will stop the cluster.
-		 * Stopping the cluster will, for each node in the cluster, block new data operations, and wait until all currently running data operations are finished.
-	  * After the leader has accepted or kicked a node, it will restart the cluster.
-		 * Restarting the cluster will, for each node in the cluster, update the cluster roster and then remove the block for new data operations.
-	* Since all nodes are at all times in consensus regarding the roster, they will always refuse taking part in transactions involving keys they aren't responsible for.
+  * Since data consistency depend on at least one of the responsible nodes being involved in each transaction involving a key, and the client doesn't at all times know the cluster roster but will instead try to execute the transaction on NBackups+1 nodes after the key in its copy of the roster, nodes must refuse taking part in transactions involving keys they aren't responsible for.
+	 * To enable this, all nodes must all times know exactly what keys they are responsible for.
+  	* To ensure this, a cluster always has a raft layer with a leader.
+	   * The leader is the only node that can accept or kick nodes.
+		 * Before the leader accepts or kicks a node, it will stop the cluster.
+		  * Stopping the cluster will, for each node in the cluster, block new data operations, and wait until all currently running data operations are finished.
+	   * After the leader has accepted or kicked a node, it will restart the cluster.
+		  * Restarting the cluster will, for each node in the cluster, update the cluster roster and then remove the block for new data operations.
  * Synchronizing transaction context between nodes is hard, since it will contain metadata for ranges split from original client requests, and node joins or disappearances will require merging or splitting those contexts.
   * Instead, the client will always try to push through the transaction, even if some nodes in the cluster don't respond, since as long as at least one of the nodes responsible for a key is still alive we won't get any inconsistencies, since it is enough that one of the NBackups+1 nodes responsible for the key validates the transaction.
 	 * To ensure data consistency in the face of this behaviour, all nodes must voluntarily die if they note that NBackups+1 nodes in a sequence disappear. Ie the cluster must suicide when it knows it can't keep data consistent any more.
