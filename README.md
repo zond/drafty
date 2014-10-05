@@ -32,7 +32,7 @@ Notes
   * Instead, the client will always try to push through the transaction, even if some nodes in the cluster don't respond, since as long as at least one of the nodes responsible for a key is still alive we won't get any inconsistencies, since it is enough that one of the NBackups+1 nodes responsible for the key validates the transaction.
 	 * To ensure data consistency in the face of this behaviour, all nodes must voluntarily die if they note that NBackups+1 nodes in a sequence disappear. Ie the cluster must suicide when it knows it can't keep data consistent any more.
 	 * To ensure that this also happens when a new node joins the cluster right before the last of an old sequence dies, and thus takes over a range that it hasn't as yet received a full copy of, this suicide watch must be aware of which nodes are fully synchronized and which are not.
-* To ensure serializable snapshot isolation transactors will use http://www.vldb.org/pvldb/vol7/p329-mahmoud.pdf modified to let transactions collide over overlapping key ranges instead of keys, which will (if it works) prohibit phantom reads.
+* To ensure serializable snapshot isolation transactors will use http://www.vldb.org/pvldb/vol7/p329-mahmoud.pdf modified to let transactions collide over overlapping key ranges instead of just individual keys, which will (if it works) prohibit phantom reads.
  * This will require lots of legwork, such as:
   * Client transactions will need to cache the range lookups performed as well as their results.
 	 * To avoid phantom reads, ranges already looked up must never be looked up again against the cluster.
