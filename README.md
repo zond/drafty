@@ -28,7 +28,7 @@ Notes
 		  * Stopping the cluster will, for each node in the cluster, block new data operations, and wait until all currently running data operations are finished.
 	   * After the leader has accepted or kicked a node, it will restart the cluster.
 		  * Restarting the cluster will, for each node in the cluster, update the cluster roster and then remove the block for new data operations.
- * Synchronizing transaction context between nodes is hard, since contexts contain metadata for ranges split from original client requests, and node joins or disappearances will require merging or splitting those contexts.
+ * Synchronizing transaction context between nodes is hard, since contexts contain metadata for ranges split from original client requests, and node joins or disappearances would require merging or splitting those contexts.
   * Instead, the client will always try to push through the transaction, even if some nodes in the cluster don't respond, since as long as at least one of the nodes responsible for a key is still alive we won't get any inconsistencies, since it is enough that one of the NBackups+1 nodes responsible for the key validates the transaction.
 	 * To ensure data consistency in the face of this behaviour, all nodes must voluntarily die if they note that NBackups+1 nodes in a sequence disappear. Ie the cluster must suicide when it knows it can't keep data consistent any more.
 * To ensure serializable snapshot isolation transactors will use http://www.vldb.org/pvldb/vol7/p329-mahmoud.pdf modified to let transactions collied over overlapping key ranges instead of keys, which will (if it works) prohibit phantom reads.
