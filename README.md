@@ -17,18 +17,18 @@ Each node also has backups of keys for `NBackups` of its predecessors. Ie `E`, w
 Notes
 ======
 * The cluster must always be fully functional as long as no `NBackups+1` nodes in a sequence disappear.
- * Thus, data must be present on `NBackups+1` nodes succeeding its key in the namespace.
- * To simplify this in a transaction context, the client itself will be responsible for including all `NBackups+1` nodes succeding the key in any transaction involving key.
-  * The client has a copy of the cluster roster that isn't guaranteed to be up to date.
-  * Since data consistency depend on at least one of the nodes responsible for a key is also involved in the transaction, nodes must refuse taking part in transactions involving keys they aren't responsible for.
-	 * To enable this, all nodes must all times know exactly what keys they are responsible for.
-  	* To ensure this, a cluster always has a raft layer with a leader.
-	   * The leader is the only node that can accept or kick members.
-		 * Before the leader accepts or kicks a node, it will stop the cluster.
-		  * Stopping the cluster will, for each node in the cluster, block new data operations, and wait until all currently running data operations are finished.
-	   * After the leader has accepted or kicked a node, it will restart the cluster.
-		  * Restarting the cluster will, for each node in the cluster, update the cluster roster and then remove the block for new data operations.
- * Synchronizing transaction context between nodes is hard, since contexts contain metadata for ranges split from original client requests, and node joins or disappearances would require merging or splitting those contexts.
+  * Thus, data must be present on `NBackups+1` nodes succeeding its key in the namespace.
+  * To simplify this in a transaction context, the client itself will be responsible for including all `NBackups+1` nodes succeding the key in any transaction involving key.
+    * The client has a copy of the cluster roster that isn't guaranteed to be up to date.
+    * Since data consistency depend on at least one of the nodes responsible for a key is also involved in the transaction, nodes must refuse taking part in transactions involving keys they aren't responsible for.
+      * To enable this, all nodes must all times know exactly what keys they are responsible for.
+        * To ensure this, a cluster always has a raft layer with a leader.
+          * The leader is the only node that can accept or kick members.
+    	    * Before the leader accepts or kicks a node, it will stop the cluster.
+     	      * Stopping the cluster will, for each node in the cluster, block new data operations, and wait until all currently running data operations are finished.
+          * After the leader has accepted or kicked a node, it will restart the cluster.
+    	      * Restarting the cluster will, for each node in the cluster, update the cluster roster and then remove the block for new data operations.
+  * Synchronizing transaction context between nodes is hard, since contexts contain metadata for ranges split from original client requests, and node joins or disappearances would require merging or splitting those contexts.
   * Instead, the client will always try to push through the transaction, even if some nodes in the cluster don't respond, since as long as at least one of the nodes responsible for a key is still alive we won't get any inconsistencies, since it is enough that one of the `NBackups+1` nodes responsible for the key validates the transaction.
 	 * To ensure data consistency in the face of this behaviour, all nodes must voluntarily die if they note that `NBackups+1` nodes in a sequence disappear. Ie the cluster must suicide when it knows it can't keep data consistent any more.
 	 * To ensure that this also happens when a new node joins the cluster right before the last of an old sequence dies, and thus takes over a range that it hasn't as yet received a full copy of, this suicide watch must be aware of which nodes are fully synchronized and which are not.
