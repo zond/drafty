@@ -23,7 +23,7 @@ Notes
   * Since data consistency depend on at least one of the nodes responsible for a key is also involved in the transaction, nodes must refuse taking part in transactions involving keys they aren't responsible for.
 	 * To enable this, all nodes must all times know exactly what keys they are responsible for.
   	* To ensure this, a cluster always has a raft layer with a leader.
-	   * The leader is the only node that can accept or kick nodes.
+	   * The leader is the only node that can accept or kick members.
 		 * Before the leader accepts or kicks a node, it will stop the cluster.
 		  * Stopping the cluster will, for each node in the cluster, block new data operations, and wait until all currently running data operations are finished.
 	   * After the leader has accepted or kicked a node, it will restart the cluster.
