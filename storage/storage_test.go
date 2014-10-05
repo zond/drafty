@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/boltdb/bolt"
+	"github.com/zond/drafty/ranje"
 )
 
 func init() {
@@ -65,11 +66,8 @@ func TestPartialSyncAll(t *testing.T) {
 					}
 				}
 				from := randomKey(4)
-				var to []byte
-				for to == nil || bytes.Compare(to, from) < 0 {
-					to = randomKey(4)
-				}
-				r := Range{
+				to := randomKey(4)
+				r := ranje.Range{
 					FromInc: from,
 					ToExc:   to,
 				}
@@ -110,34 +108,6 @@ func TestPartialSyncAll(t *testing.T) {
 	}
 }
 
-func TestRange(t *testing.T) {
-	r := Range{
-		FromInc: []byte{1, 2, 3},
-		ToExc:   []byte{2, 3, 4},
-	}
-	if r.Within([]byte{1, 2, 2}) {
-		t.Errorf("noo")
-	}
-	if r.Within([]byte{1, 2, 2, 9, 9, 9}) {
-		t.Errorf("noo")
-	}
-	if r.Within([]byte{2, 3, 4}) {
-		t.Errorf("noo")
-	}
-	if r.Within([]byte{2, 3, 4, 0}) {
-		t.Errorf("noo")
-	}
-	if !r.Within([]byte{1, 2, 3}) {
-		t.Errorf("noo")
-	}
-	if !r.Within([]byte{1, 2, 3, 4}) {
-		t.Errorf("noo")
-	}
-	if !r.Within([]byte{2, 3, 3, 9, 9}) {
-		t.Errorf("noo")
-	}
-}
-
 func randomKey(l int) (result []byte) {
 	result = make([]byte, 1+rand.Int()%(l-1))
 	for index, _ := range result {
@@ -166,7 +136,7 @@ func TestSync(t *testing.T) {
 			if err := db1.PutString("c", "c"); err != nil {
 				t.Fatalf("%v", err)
 			}
-			if ops, err := db1.Sync(db2, Range{}, 1, ""); err != nil || ops != 1 {
+			if ops, err := db1.Sync(db2, ranje.Range{}, 1, ""); err != nil || ops != 1 {
 				t.Fatalf("%v", err)
 			}
 			m2, err := db2.ToSortedMap()
@@ -202,7 +172,7 @@ func TestSyncAll(t *testing.T) {
 					t.Fatalf("%v", err)
 				}
 			}
-			if err := db1.SyncAll(db2, Range{}); err != nil {
+			if err := db1.SyncAll(db2, ranje.Range{}); err != nil {
 				t.Fatalf("%v", err)
 			}
 			if eq, err := db2.Equal(db2); err != nil {
@@ -283,4 +253,74 @@ func TestTopHash(t *testing.T) {
 			}
 		})
 	})
+}
+
+func TestRange(t *testing.T) {
+	withDB(t, func(db *DB) {
+		if err := db.PutString("a", "a"); err != nil {
+			t.Fatalf("%v", err)
+		}
+		if err := db.PutString("b", "b"); err != nil {
+			t.Fatalf("%v", err)
+		}
+		if err := db.PutString("c", "c"); err != nil {
+			t.Fatalf("%v", err)
+		}
+		if err := db.PutString("d", "d"); err != nil {
+			t.Fatalf("%v", err)
+		}
+		v1, err := db.Range(ranje.Range{
+			FromInc: []byte("a"),
+			ToExc:   []byte("c"),
+		})
+		if err != nil {
+			t.Fatalf("%v", err)
+		}
+		if !reflect.DeepEqual(v1, Values{
+			Value{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 97},
+			Value{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 98},
+		}) {
+			t.Errorf("Wrong result")
+		}
+		v2, err := db.Range(ranje.Range{
+			FromInc: []byte("b"),
+			ToExc:   []byte("d"),
+		})
+		if err != nil {
+			t.Fatalf("%v", err)
+		}
+		if !reflect.DeepEqual(v2, Values{
+			Value{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 98},
+			Value{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 99},
+		}) {
+			t.Errorf("Wrong result")
+		}
+		v3, err := db.Range(ranje.Range{
+			FromInc: []byte("c"),
+			ToExc:   []byte("b"),
+		})
+		if err != nil {
+			t.Fatalf("%v", err)
+		}
+		if !reflect.DeepEqual(v3, Values{
+			Value{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 99},
+			Value{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 100},
+			Value{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 97},
+		}) {
+			t.Errorf("Wrong result")
+		}
+		v4, err := db.Range(ranje.Range{
+			FromInc: []byte("d"),
+			ToExc:   []byte("a"),
+		})
+		if err != nil {
+			t.Fatalf("%v", err)
+		}
+		if !reflect.DeepEqual(v4, Values{
+			Value{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 100},
+		}) {
+			t.Errorf("Wrong result")
+		}
+	})
+
 }

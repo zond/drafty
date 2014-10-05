@@ -11,6 +11,7 @@ import (
 	"github.com/kr/pretty"
 	"github.com/spaolacci/murmur3"
 	"github.com/zond/drafty/log"
+	"github.com/zond/drafty/ranje"
 )
 
 var valueBucketKey = []byte("values")
@@ -30,6 +31,8 @@ const (
 const (
 	deleted = 1 << iota
 )
+
+type Values []Value
 
 type Value []byte
 
@@ -240,61 +243,7 @@ func (self *DB) updateHashes(valueBucket, merkleBucket *bolt.Bucket, key []byte)
 	return
 }
 
-type Ranges []Range
-
-func (self Ranges) Within(k []byte) bool {
-	for _, r := range self {
-		if r.Within(k) {
-			return true
-		}
-	}
-	return false
-}
-
-type Range struct {
-	FromInc []byte
-	ToExc   []byte
-}
-
-func (self Range) Within(k []byte) bool {
-	cmp := bytes.Compare(self.FromInc, self.ToExc)
-	if cmp == 0 {
-		return true
-	}
-	if cmp > 0 {
-		return (self.FromInc == nil || bytes.Compare(self.FromInc, k) < 1) || (self.ToExc == nil || bytes.Compare(self.ToExc, k) > 0)
-	}
-	return (self.FromInc == nil || bytes.Compare(self.FromInc, k) < 1) && (self.ToExc == nil || bytes.Compare(self.ToExc, k) > 0)
-}
-
-func (self Range) PrefixWithin(k []byte) bool {
-	from := self.FromInc
-	if len(from) > len(k) {
-		from = self.FromInc[:len(k)]
-	}
-	to := self.ToExc
-	if len(to) > len(k) {
-		to = self.ToExc[:len(k)]
-	}
-	cmp := bytes.Compare(from, to)
-	if cmp == 0 {
-		return true
-	}
-	if cmp > 0 {
-		return (from == nil || bytes.Compare(from, k) < 1) || (to == nil || bytes.Compare(to, k) > -1)
-	}
-	return (from == nil || bytes.Compare(from, k) < 1) && (to == nil || bytes.Compare(to, k) > -1)
-}
-
-func (self Range) Empty() bool {
-	return self.FromInc == nil && self.ToExc == nil
-}
-
-func (self Range) String() string {
-	return fmt.Sprintf("Range{%v-%v}", hex.EncodeToString(self.FromInc), hex.EncodeToString(self.ToExc))
-}
-
-func (self *DB) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOps uint64, logs string) (ops uint64, err error) {
+func (self *DB) sync(o Synchronizable, level uint, prefix []byte, r ranje.Range, maxOps uint64, logs string) (ops uint64, err error) {
 	hashes, err := self.Hashes(prefix, level)
 	if err != nil {
 		return
@@ -356,14 +305,14 @@ func (self *DB) sync(o Synchronizable, level uint, prefix []byte, r Range, maxOp
 	return
 }
 
-func (self *DB) SyncAll(o Synchronizable, r Range) (err error) {
+func (self *DB) SyncAll(o Synchronizable, r ranje.Range) (err error) {
 	var ops uint64
 	for ops, err = self.Sync(o, r, uint64(0xffffffffffffffff), ""); err == nil && ops > 0; ops, err = self.Sync(o, r, uint64(0xffffffffffffffff), "") {
 	}
 	return
 }
 
-func (self *DB) Sync(o Synchronizable, r Range, maxOps uint64, logs string) (ops uint64, err error) {
+func (self *DB) Sync(o Synchronizable, r ranje.Range, maxOps uint64, logs string) (ops uint64, err error) {
 	eq, err := self.Equal(o)
 	if err != nil {
 		return
@@ -497,14 +446,15 @@ func (self *DB) PutString(key string, value string) (err error) {
 	return self.Put([]byte(key), val, "")
 }
 
-func (self *DB) GetString(key string) (result string, err error) {
+func (self *DB) GetString(key string) (result string, found bool, err error) {
 	res, err := self.Get([]byte(key))
 	if err != nil {
 		return
 	}
-	if res == nil {
+	if len(res) == 0 {
 		return
 	}
+	found = true
 	result = string(res[17:])
 	return
 }
@@ -519,6 +469,36 @@ func (self *DB) Get(key []byte) (result Value, err error) {
 		val := valueBucket.Get(key)
 		if val != nil {
 			result = Value(append([]byte{}, val...))
+		}
+		return
+	}); err != nil {
+		return
+	}
+	return
+}
+
+func (self *DB) Range(r ranje.Range) (result Values, err error) {
+	if err = self.bolt.View(func(tx *bolt.Tx) (err error) {
+		valueBucket := tx.Bucket(valueBucketKey)
+		if valueBucket == nil {
+			err = fmt.Errorf("Database has no value bucket?")
+			return
+		}
+		if r.Empty() {
+			return
+		}
+		cursor := valueBucket.Cursor()
+		if r.Reversed() {
+			for key, value := cursor.Seek(r.FromInc); key != nil; key, value = cursor.Next() {
+				result = append(result, Value(append([]byte{}, value...)))
+			}
+			for key, value := cursor.First(); key != nil && bytes.Compare(key, r.ToExc) < 0; key, value = cursor.Next() {
+				result = append(result, Value(append([]byte{}, value...)))
+			}
+		} else {
+			for key, value := cursor.Seek(r.FromInc); key != nil && bytes.Compare(key, r.ToExc) < 0; key, value = cursor.Next() {
+				result = append(result, Value(append([]byte{}, value...)))
+			}
 		}
 		return
 	}); err != nil {
