@@ -19,6 +19,7 @@ import (
 	"github.com/zond/drafty/peer/messages"
 	"github.com/zond/drafty/peer/ring"
 	raftTransport "github.com/zond/drafty/raft/transport"
+	"github.com/zond/drafty/ranje"
 	"github.com/zond/drafty/storage"
 	storageMessages "github.com/zond/drafty/storage/messages"
 	storageTransport "github.com/zond/drafty/storage/transport"
@@ -175,6 +176,15 @@ func (self *Peer) Continue(r *ring.Ring) (err error) {
 	return
 }
 
+func (self *Peer) AssertResponsibility(key []byte) (err error) {
+	successors := self.ring.Successors(key, NBackups+1)
+	if !successors.ContainsPos(self.pos) {
+		err = fmt.Errorf("%v is not responsible for %v", self, hex.EncodeToString(key))
+		return
+	}
+	return
+}
+
 func (self *Peer) Dump() (result string, err error) {
 	if err = self.WhileRunning(func() (err error) {
 		result = self.storage.PPStrings()
@@ -292,14 +302,14 @@ func (self *Peer) cleanOnce(stops uint64) (acted bool, err error) {
 		toOffer := [][2][]byte{}
 		var preds ring.Peers
 		preds = self.ring.Predecessors(self.pos, NBackups+1)
-		ranges := storage.Ranges{}
+		ranges := ranje.Ranges{}
 		for i := 0; i < len(preds)-1; i++ {
-			ranges = append(ranges, storage.Range{
+			ranges = append(ranges, ranje.Range{
 				FromInc: preds[i+1].Pos,
 				ToExc:   preds[i].Pos,
 			})
 		}
-		ranges = append(ranges, storage.Range{
+		ranges = append(ranges, ranje.Range{
 			FromInc: preds[0].Pos,
 			ToExc:   self.pos,
 		})
@@ -366,7 +376,7 @@ func (self *Peer) syncOnceWith(i int, stops uint64) (acted bool, err error) {
 		if atomic.LoadUint64(&self.stops) != stops {
 			return
 		}
-		r := storage.Range{
+		r := ranje.Range{
 			FromInc: self.ring.Predecessors(self.pos, 1)[0].Pos,
 			ToExc:   self.pos,
 		}
