@@ -21,13 +21,13 @@ Notes
   * To simplify this in a transaction context, the client itself will be responsible for including all `NBackups+1` nodes succeding the key in any transaction involving key.
   * The client has a copy of the cluster roster that isn't guaranteed to be up to date.
   * Since data consistency depend on at least one of the nodes responsible for a key is also involved in the transaction, nodes must refuse taking part in transactions involving keys they aren't responsible for.
-  * To enable this, all nodes must all times know exactly what keys they are responsible for.
-  * To ensure this, a cluster always has a raft layer with a leader.
-  * The leader is the only node that can accept or kick members.
-  * Before the leader accepts or kicks a node, it will stop the cluster.
-  * Stopping the cluster will, for each node in the cluster, block new data operations, and wait until all currently running data operations are finished.
-  * After the leader has accepted or kicked a node, it will restart the cluster.
-  * Restarting the cluster will, for each node in the cluster, update the cluster roster and then remove the block for new data operations.
+  * [DONE] To enable this, all nodes must all times know exactly what keys they are responsible for.
+  * [DONE] To ensure this, a cluster always has a raft layer with a leader.
+  * [DONE] The leader is the only node that can accept or kick members.
+  * [DONE] Before the leader accepts or kicks a node, it will stop the cluster.
+  * [DONE] Stopping the cluster will, for each node in the cluster, block new data operations, and wait until all currently running data operations are finished.
+  * [DONE] After the leader has accepted or kicked a node, it will restart the cluster.
+  * [DONE] Restarting the cluster will, for each node in the cluster, update the cluster roster and then remove the block for new data operations.
 * Transactions must not cause inconsistent data when any member, either client or node, of the transaction dies.
   * Synchronizing transaction context between nodes is hard, since contexts contain metadata for ranges split from original client requests, and node joins or disappearances would require merging or splitting those contexts.
   * Instead, the client will always try to push through the transaction, even if some nodes in the cluster don't respond, since as long as at least one of the nodes responsible for a key is still alive we won't get any inconsistencies, since it is enough that one of the `NBackups+1` nodes responsible for the key validates the transaction.
@@ -41,9 +41,9 @@ Notes
       * To simplify returning consistent results with the above requirements, the final result of any range lookup will be fetched from the cache produced by the actual cluster range lookups.
       * To enable this, the cache will be sorted. 
     * All the parts http://www.vldb.org/pvldb/vol7/p329-mahmoud.pdf that mention `collects the transaction IDs of all transactions with soft read locks on y` and such need to be modified to `collects the transactionIDs of all transactions with soft read locks on ranges overlapping y`.
-* To make sure nodes joining the cluster get the data they need to be responsible for, or nodes that get new responsibilites as nodes leave the cluster have the data they need, the cluster will start clean and synchronize operations every time it restarts.
-  * A clean operation will go through the data of the node, from the node id and upwards (overflowing to start from the beginning if needed), until it hits the id of the `NBackups+2`'th predecessor of the node, and try to write the data it finds to each node the data actually belongs to.
-  * Whenever a write is successful, the data will be removed from the cleaning node.
-  * A synchronize operation will make sure that each `NBackups` node succeeding the synchronizing node in the cluster has the same data between the predecessor of the node and the node.
-  * To ensure this without going through and comparing each value between predecessor and synchronizing node all nodes keep a merkle tree for their data, which ensures a synchronization that is O(ln(n)+m) where n is the number of keys the synchronizing node owns and m is the number of keys that need to be synchronized.
+* [DONE] To make sure nodes joining the cluster get the data they need to be responsible for, or nodes that get new responsibilites as nodes leave the cluster have the data they need, the cluster will start clean and synchronize operations every time it restarts.
+  * [DONE} A clean operation will go through the data of the node, from the node id and upwards (overflowing to start from the beginning if needed), until it hits the id of the `NBackups+2`'th predecessor of the node, and try to write the data it finds to each node the data actually belongs to.
+  * [DONE] Whenever a write is successful, the data will be removed from the cleaning node.
+  * [DONE] A synchronize operation will make sure that each `NBackups` node succeeding the synchronizing node in the cluster has the same data between the predecessor of the node and the node.
+  * [DONE] To ensure this without going through and comparing each value between predecessor and synchronizing node all nodes keep a merkle tree for their data, which ensures a synchronization that is O(ln(n)+m) where n is the number of keys the synchronizing node owns and m is the number of keys that need to be synchronized.
 
